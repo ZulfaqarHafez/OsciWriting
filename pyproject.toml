@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-redundancy-study"
+version = "0.2.0"
+description = "Measures whether real-world LLM usage is repetitive AND substitutable enough to justify a cache + small-model routing layer (PRD v2)."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+authors = [{ name = "Zul Fhagez" }]
+
+dependencies = [
+    "datasets>=2.16",
+    "sentence-transformers>=2.5",
+    "umap-learn>=0.5.5",
+    "hdbscan>=0.8.33",
+    "scikit-learn>=1.4",
+    "pandas>=2.2",
+    "numpy>=1.26,<2.0",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+    "python-dotenv>=1.0",
+    "pyarrow>=14.0",
+    "huggingface-hub>=0.20",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+redundancy = "redundancy.pipeline:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
