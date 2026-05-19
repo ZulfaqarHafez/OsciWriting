@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_dedup.py -q)",
+      "Bash(python -c 'import json,sys; d=json.load\\(open\\(f'\\\\''results/__TRACKED_VAR__/headline_numbers.json'\\\\''\\)\\); [print\\(k, json.dumps\\(v\\)\\) for k,v in d.items\\(\\) if k in \\('\\\\''filters'\\\\'','\\\\''dedup'\\\\'','\\\\''H1'\\\\'','\\\\''H3'\\\\'','\\\\''H4'\\\\''\\)]')",
+      "Bash(grep -E '^## Cluster' results/__TRACKED_VAR__/cluster_examples.md)"
+    ]
+  }
+}

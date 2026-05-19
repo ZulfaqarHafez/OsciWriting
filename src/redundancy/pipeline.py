@@ -53,6 +53,7 @@ def _build_h5_items(prompt_emb, prompts, responses, bands, per_band, seed):
 
 def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     from .data import load_records, prompts as get_prompts, responses as get_responses
+    from .dedup import exact_dedup, near_dedup
     from .embed import embed
     from .reduce import reduce as umap_reduce
     from .cluster import (
@@ -66,11 +67,21 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     from . import report as R
 
     th = derive_thresholds(CONFIG.cost)
+    ct = CONFIG.thresholds  # static thresholds: H4_rho + control gaps (not derived)
+    th_full = {
+        **asdict(th),
+        "H4_rho": ct.H4_rho,
+        "control_gap_h1": ct.control_gap_h1,
+        "control_gap_h3": ct.control_gap_h3,
+        "control_gap_h5": ct.control_gap_h5,
+    }
     ts = run_timestamp()
     out_dir = RESULTS / f"run_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records = load_records(n, dataset=dataset, seed=seed)
+    records, exact_stats = exact_dedup(records)  # PRD §8.6 (added v2.1)
+
     p_all = get_prompts(records)
     strict_idx = filters.apply(p_all, "strict")
     recall_idx = filters.apply(p_all, "recall")
@@ -78,19 +89,43 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     subject = [records[i] for i in strict_idx]
     if len(subject) < 50:
         raise RuntimeError(
-            f"only {len(subject)} writing prompts from {len(records)} records; "
-            "increase --n (the strict filter biases the yield down — PRD §8.2)"
+            f"only {len(subject)} writing prompts from {len(records)} deduped "
+            "records; increase --n (strict filter biases yield down — PRD §8.2; "
+            "exact dedup further shrinks it — PRD §8.6)"
         )
     unfiltered = baseline.unfiltered_random(records, len(subject), seed)
     scrambled = baseline.scrambled(subject, seed)
 
-    s_prompts, s_resp = get_prompts(subject), get_responses(subject)
+    s_prompts = get_prompts(subject)
+    s_resp_all = get_responses(subject)
     u_prompts = get_prompts(unfiltered)
-    z_prompts, z_resp = get_prompts(scrambled), get_responses(scrambled)
+    z_prompts = get_prompts(scrambled)
+    z_resp_all = get_responses(scrambled)
 
-    s_pe, s_re = embed(s_prompts), embed(s_resp)
-    u_pe = embed(u_prompts)
-    z_pe = embed(z_prompts)
+    # Near-dup collapse per arm (PRD §8.6): one representative per cosine>=0.98
+    # blob, before any metric, so H1/H3/H4 are not driven by copy-paste volume.
+    s_pe_full = embed(s_prompts)
+    s_keep, s_near = near_dedup(s_pe_full)
+    s_prompts = [s_prompts[i] for i in s_keep]
+    s_resp = [s_resp_all[i] for i in s_keep]
+    s_pe = s_pe_full[s_keep]
+    s_re = embed(s_resp)
+
+    u_pe_full = embed(u_prompts)
+    u_keep, u_near = near_dedup(u_pe_full)
+    u_pe = u_pe_full[u_keep]
+
+    z_pe_full = embed(z_prompts)
+    z_keep, z_near = near_dedup(z_pe_full)
+    z_prompts = [z_prompts[i] for i in z_keep]
+    z_resp = [z_resp_all[i] for i in z_keep]
+    z_pe = z_pe_full[z_keep]
+
+    if len(s_pe) < 50:
+        raise RuntimeError(
+            f"only {len(s_pe)} subject prompts survive dedup (exact+near); "
+            "increase --n — the writing subset is mostly verbatim spam (PRD §8.6)"
+        )
 
     # H1 — coverage envelope vs unfiltered control
     s_sweep = sweep(s_pe)
@@ -98,6 +133,7 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     h1_gap = s_sweep.coverage_median - u_sweep.coverage_median
     h1_pass = (
         s_sweep.separable
+        and not s_sweep.degenerate
         and s_sweep.coverage_median >= th.T1
         and h1_gap >= CONFIG.thresholds.control_gap_h1
     )
@@ -117,19 +153,26 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     # H4 — full-range stratified correlation
     pairs = M.stratified_pairs(s_pe, CONFIG.h4_pairs, CONFIG.h4_bins, seed)
     h4 = M.h4_correlation(s_pe, s_re, pairs)
-    h4_pass = not np.isnan(h4["spearman"]) and h4["spearman"] >= th.H4_rho
+    h4_pass = not np.isnan(h4["spearman"]) and h4["spearman"] >= ct.H4_rho
 
     headline = {
         "run": ts,
         "n": n,
         "dataset": dataset,
         "seed": seed,
-        "thresholds": asdict(th),
+        "thresholds": th_full,
         "filters": {
-            "records": len(records),
+            "records_after_exact_dedup": len(records),
             "strict_n": len(strict_idx),
             "recall_n": len(recall_idx),
             "note": "rubric uses conservative (recall) numbers if they diverge — PRD §8.2",
+        },
+        "dedup": {
+            "exact": exact_stats.as_dict(),
+            "near_subject": s_near.as_dict(),
+            "near_unfiltered": u_near.as_dict(),
+            "near_scrambled": z_near.as_dict(),
+            "note": "WildChat writing subset is heavily verbatim-duplicated — PRD §8.6",
         },
         "H1": {
             "coverage_median": s_sweep.coverage_median,
@@ -137,6 +180,7 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
             "coverage_max": s_sweep.coverage_max,
             "noise_median": s_sweep.noise_median,
             "separable": s_sweep.separable,
+            "degenerate": s_sweep.degenerate,
             "control_unfiltered": u_sweep.coverage_median,
             "gap": h1_gap,
             "pass": bool(h1_pass),

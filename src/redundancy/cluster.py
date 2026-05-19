@@ -56,6 +56,25 @@ class SweepResult:
     coverage_max: float
     noise_median: float
     separable: bool  # False if noise > 0.60 across most of the grid
+    degenerate: bool  # True if coverage saturates ~1.0 / ~0 noise / no sweep variation
+
+
+def is_degenerate(
+    cov_min: float, cov_max: float, noise_median: float
+) -> bool:
+    """Symmetric counterpart to the high-noise guard (PRD §8.4, added v2.1).
+
+    A real concentration signal leaves a tail (some noise) and moves as the
+    sweep params change. Coverage pinned at ~1.0 with ~0 noise and no variation
+    across the 36-cell grid is HDBSCAN swallowing everything into a couple of
+    mega-blobs — meaningless, must not score as an H1 pass (the pilot's false
+    pass came through exactly this hole).
+    """
+    return (
+        cov_min >= 0.99
+        and noise_median <= 0.01
+        and (cov_max - cov_min) < 0.01
+    )
 
 
 def sweep(emb: np.ndarray, n: int = CONFIG.top_n_clusters) -> SweepResult:
@@ -83,13 +102,15 @@ def sweep(emb: np.ndarray, n: int = CONFIG.top_n_clusters) -> SweepResult:
     cov = [c["coverage"] for c in cells]
     noise = [c["noise_fraction"] for c in cells]
     high_noise = sum(1 for x in noise if x > 0.60)
+    noise_med = statistics.median(noise)
     return SweepResult(
         cells=cells,
         coverage_median=statistics.median(cov),
         coverage_min=min(cov),
         coverage_max=max(cov),
-        noise_median=statistics.median(noise),
+        noise_median=noise_med,
         separable=high_noise <= len(noise) // 2,
+        degenerate=is_degenerate(min(cov), max(cov), noise_med),
     )
 
 

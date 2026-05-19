@@ -13,6 +13,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Load .env once at import so HF_TOKEN / HF_HOME / JUDGE_API_KEY reach the
+# process (the pipeline reads os.environ, not the file). Idempotent; no-op if
+# python-dotenv is absent or no .env exists.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 SEED = 42
 
 ROOT = Path(__file__).resolve().parents[2]
