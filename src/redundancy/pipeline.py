@@ -312,7 +312,12 @@ def _log_decision(headline: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="LLM redundancy study pipeline (PRD §8.1)")
     ap.add_argument("--n", type=int, default=5000, help="raw English records to sample")
-    ap.add_argument("--dataset", choices=["wildchat", "lmsys"], default="wildchat")
+    ap.add_argument(
+        "--dataset",
+        choices=["lmsys", "wildchat"],
+        default="lmsys",
+        help="primary is LMSYS (PRD §7, v2.1); wildchat retained as contaminated fallback",
+    )
     ap.add_argument("--no-judge", action="store_true", help="pilot: skip H2/H5 (no API cost)")
     ap.add_argument("--seed", type=int, default=CONFIG.seed)
     args = ap.parse_args(argv)

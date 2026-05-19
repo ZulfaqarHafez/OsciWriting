@@ -34,10 +34,12 @@ DOCS = ROOT / "docs"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 JUDGE_MODEL = "claude-haiku-4-5-20251001"
 
-# datasets[<name>] -> (hf_id, split)
+# datasets[<name>] -> (hf_id, split). LMSYS is primary as of v2.1: the N=5000
+# pilot showed WildChat's writing subset is dominated by one viral Midjourney
+# template (PRD §7, §8.6). WildChat retained as a contaminated fallback.
 DATASETS = {
-    "wildchat": ("allenai/WildChat-1M", "train"),
     "lmsys": ("lmsys/lmsys-chat-1m", "train"),
+    "wildchat": ("allenai/WildChat-1M", "train"),
 }
 LANGUAGE = "English"
 

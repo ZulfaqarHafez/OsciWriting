@@ -129,7 +129,8 @@ def write_summary(out_dir: Path, headline: dict) -> None:
         "",
         "| Hypothesis | Value | Threshold | Control gap | Pass |",
         "| --- | --- | --- | --- | --- |",
-        f"| H1 coverage | {headline['H1']['coverage_median']:.3f} | {th['T1']} | "
+        f"| H1 coverage{' (DEGENERATE)' if headline['H1'].get('degenerate') else ''} | "
+        f"{headline['H1']['coverage_median']:.3f} | {th['T1']} | "
         f"{headline['H1']['gap']:.3f} | {headline['H1']['pass']} |",
         f"| H2 templated | {headline['H2'].get('n_yes')}/{headline['H2'].get('n_clusters')} | "
         f">=60% | n/a | {headline['H2']['pass']} |",

@@ -51,7 +51,7 @@ def _cache_path(dataset: str, n: int) -> Path:
 
 def load_records(
     n: int,
-    dataset: str = "wildchat",
+    dataset: str = "lmsys",
     seed: int = CONFIG.seed,
     use_cache: bool = True,
 ) -> list[Record]:

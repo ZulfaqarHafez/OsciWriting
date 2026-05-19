@@ -46,3 +46,21 @@ One entry per major decision, dated (PRD §5).
 - N=5000 dataset=wildchat thresholds_provisional=True
 - Outcome: **Pilot — no decision** (H5 gate: NOT EVALUATED)
 - Action: Run without --no-judge for the H5-gated decision (PRD §9).
+
+## 2026-05-20 — Dedup@0.98 insufficient → switch to LMSYS + H1 degeneracy guard
+
+- Re-pilot with dedup: exact only 2.6%, near@0.98 subject 10.6%. WildChat
+  contaminant is a viral *template* (Midjourney prompt generator): huge fixed
+  preamble, tiny variable concept → distinct requests sit at cosine 0.90–0.97,
+  *below* the 0.98 cut. Post-dedup clustering was still 2 mega-blobs (738 template
+  + 571 grab-bag), 0 noise, coverage 1.0 across all 36 sweep cells. Rubric scored
+  this as **H1 pass** (false pass) because the control coverage merely dropped to
+  0.73 so the control-gap check passed.
+- Decision (user): (a) switch primary dataset WildChat → **LMSYS-Chat-1M**;
+  WildChat demoted to cautionary fallback (PRD §7). v1 "comparable to OpenAI's
+  WildChat paper" claim withdrawn. (b) Add a **symmetric degeneracy guard**
+  (`cluster.is_degenerate`): flat-1.0 / ~0-noise / no-sweep-variation → H1 Fail
+  regardless of T1/control gap (PRD §8.4).
+- Not chosen: template-family collapse / filter-tightening (revisit only if LMSYS
+  also shows template contamination).
+- Tests: 30 pass (added test_cluster.py, test_dedup.py). Next: re-pilot on LMSYS.
