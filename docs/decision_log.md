@@ -115,3 +115,16 @@ One entry per major decision, dated (PRD §5).
   still passes (21.4% > 0.17), **H3 recall now fails** (15.2% < 0.17); **H5 gate
   still fails both arms** (12.8% / 15.3% vs 0.70). Verdict unchanged: Abandon.
 - Outstanding for PRD-completeness: human PRD §8.5 audit (user time only).
+
+## 2026-05-20 — Binary content-rule label applied (NOT the §8.5 audit)
+
+- User-supplied rule: NSFW content → UNACCEPTABLE; else → ACCEPTABLE.
+  Mismatch with §8.5 (which asks about substitutability, not content) was
+  explained beforehand; user chose to apply anyway with explicit documentation.
+- Result: 11/100 agreement; 86/100 are `UNACCEPTABLE → ACCEPTABLE` (judge said
+  the substitution didn't substantively answer the prompt; the rule said the
+  content wasn't NSFW so it was OK). 12/100 NSFW matches.
+- Recorded in `audit_binary_content_rule.jsonl` and findings §3. The 11% does
+  **not** invalidate the judge or trigger the §8.5 fall-back, because the
+  content-rule question and the audit question are orthogonal.
+- PRD §8.5 substitutability audit still owed.

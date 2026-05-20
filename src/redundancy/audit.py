@@ -284,6 +284,95 @@ def inter_llm_label(
     }
 
 
+_NSFW_RE = re.compile(
+    r"\b("
+    r"porn(?:o|ographic|ography)?|nsfw|erotic(?:a|ally)?|fetish|kink|"
+    r"(?:hand|blow|rim)\s*job|cum(?:ming|shot)?|orgasm|"
+    r"masturbat\w+|intercourse|coitus|"
+    r"(?:big|tight|wet|hairy|small)?\s*(?:dick|cock|penis|pussy|vagina|clitoris|clit|boobs?|tits?|breasts?|nipples?|ass(?:hole)?|butt)|"
+    r"nude|naked|nudity|undress(?:ed|ing)?|"
+    r"fuck(?:ing|ed|er)?|shit|bitch|whore|slut|"
+    r"sex(?:ual|ually|y)?|"
+    r"horny|aroused|moan(?:ing|s)?|"
+    r"anal|oral\s*sex|deepthroat|gangbang"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_nsfw(text: str) -> bool:
+    return bool(_NSFW_RE.search(text or ""))
+
+
+def binary_content_rule_label(run_dir: Path) -> dict:
+    """Apply a user-supplied binary CONTENT-TYPE rule and compare to judge.
+
+    Rule (user, 2026-05-20): NSFW content -> UNACCEPTABLE; everything else ->
+    ACCEPTABLE. Explicitly NOT a substitutability audit (which asks whether the
+    response answers PROMPT_B). Documented as such in findings so the agreement
+    rate is not misread as PRD §8.5 validation.
+    """
+    jsonl_path = run_dir / "audit_sample.jsonl"
+    rows = [
+        json.loads(l) for l in jsonl_path.read_text(encoding="utf-8").splitlines() if l.strip()
+    ]
+    out_path = run_dir / "audit_binary_content_rule.jsonl"
+    out_path.write_text("", encoding="utf-8")
+
+    n_match = 0
+    n_nsfw = 0
+    auditable: list[tuple[str, str]] = []  # (judge, user)
+    for row in rows:
+        prompt_b = row.get("prompt_b") or ""
+        response_a = row.get("response_a") or ""
+        nsfw = _is_nsfw(prompt_b) or _is_nsfw(response_a)
+        user_v = "UNACCEPTABLE" if nsfw else "ACCEPTABLE"
+        judge_v = row.get("judge_verdict", "UNKNOWN")
+        if nsfw:
+            n_nsfw += 1
+        if judge_v in _VALID:
+            auditable.append((judge_v, user_v))
+            if judge_v == user_v:
+                n_match += 1
+        with out_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "id": row["id"],
+                        "judge_verdict": judge_v,
+                        "user_verdict_by_rule": user_v,
+                        "nsfw_match": nsfw,
+                    }
+                )
+                + "\n"
+            )
+
+    confusion: dict[str, int] = {}
+    for j, u in auditable:
+        confusion[f"{j}->{u}"] = confusion.get(f"{j}->{u}", 0) + 1
+    rate = (n_match / len(auditable)) if auditable else None
+    return {
+        "rule": "NSFW match -> UNACCEPTABLE; else -> ACCEPTABLE (user-supplied 2026-05-20)",
+        "warning": (
+            "This is NOT the PRD §8.5 substitutability audit. The rule classifies "
+            "by content type, not by whether the response answers PROMPT_B. The "
+            "agreement rate cannot be interpreted as validating or invalidating "
+            "the judge."
+        ),
+        "n_total": len(rows),
+        "n_nsfw_match": n_nsfw,
+        "n_auditable": len(auditable),
+        "agreements": n_match,
+        "agreement_rate": rate,
+        "confusion_judge_vs_user": confusion,
+        "interpretation_for_findings": (
+            ">=80% agreement here would NOT validate the judge per PRD §8.5; "
+            "<80% would NOT invalidate it. The rule is orthogonal to the audit's "
+            "question."
+        ),
+    }
+
+
 def _resolve(run: str | None) -> Path:
     if run:
         candidate = RESULTS / run
@@ -308,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     il.add_argument("--run", help="run dir name under results/ (default: latest)")
     il.add_argument("--model", default=INTER_LLM_MODEL)
+    br = sub.add_parser(
+        "binary-content-rule",
+        help="apply user-supplied content-type rule (NSFW=UNACCEPTABLE/else=ACCEPTABLE) and compare to judge. NOT the PRD §8.5 audit.",
+    )
+    br.add_argument("--run", help="run dir name under results/ (default: latest)")
     args = ap.parse_args(argv)
 
     run_dir = _resolve(args.run)
@@ -319,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "inter-llm":
         out = inter_llm_label(run_dir, model=args.model)
+        print(json.dumps(out, indent=2))
+        return 0
+    if args.cmd == "binary-content-rule":
+        out = binary_content_rule_label(run_dir)
         print(json.dumps(out, indent=2))
         return 0
     print(json.dumps(score(run_dir), indent=2))

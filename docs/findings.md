@@ -110,6 +110,32 @@ not validate the judge against human acceptability. **The PRD §8.5 audit remain
 outstanding.** Without it the result is robust internally and across configurations
 but is not yet PRD-complete for publication.
 
+### Binary content-rule label (user-supplied 2026-05-20, NOT the §8.5 audit)
+
+After the inter-LLM check the user supplied an alternative labeling rule —
+"anything with porn / sex / nudity / profane content → UNACCEPTABLE, the rest →
+ACCEPTABLE" — and asked to apply it to the 100-pair sample. The rule classifies
+by **content type**, not by whether the RESPONSE substantively answers PROMPT_B
+(which is what the audit asks). Both the methodological mismatch and the
+predicted outcome were stated explicitly before applying it; the user chose to
+proceed with that documentation.
+
+Result (`results/run_20260520T115124Z/audit_binary_content_rule.jsonl`):
+- 12 of 100 pairs matched the NSFW regex (an undercount vs Opus's 38% safety
+  refusal — regex misses some content the model's safety policy catches).
+- **Agreement vs judge: 11 / 100 = 11.0%** — below the §8.5 ≥80% threshold.
+- Confusion: 86 / 100 are `judge UNACCEPTABLE → rule ACCEPTABLE` (judge marked
+  the substitution unacceptable on substance — wrong topic, wrong form, missing
+  details — while the rule marked it acceptable because the content was not
+  NSFW). 10 are `UNACCEPTABLE → UNACCEPTABLE` (both flagged the same pair, on
+  different grounds).
+
+**This 11% does NOT invalidate the judge** and does NOT trigger the §8.5
+fall-back to fully-manual n=200. The audit's question and the rule's question
+are orthogonal. The result is recorded only so that the artifact exists and the
+methodology mismatch is auditable in git. PRD §8.5 (a human substitutability
+audit on the 100 pairs) is **still owed**.
+
 ### Opus 38% refusal rate is itself a data-quality finding
 
 A substantial fraction of LMSYS-Arena prompts matched by the "writing" filter are
