@@ -46,17 +46,21 @@ LANGUAGE = "English"
 
 @dataclass(frozen=True)
 class CostConstants:
-    """PRD §4a, all normalized to c_frontier = 1.0. PROVISIONAL until real prices.
+    """PRD §4a, all normalized to c_frontier = 1.0.
 
-    Replace these from the actual frontier / small-model / cache pricing before
-    the decision run, then re-run ``cost_model --write-doc``.
+    Frozen 2026-05-20 from public Anthropic API pricing:
+      - Opus 4.7 = $5 in / $25 out per MTok  (frontier)
+      - Haiku 4.5 = $1 in / $5 out per MTok  (small)
+    Both rows are a clean 1:5 ratio so c_small = 0.20 with no token-mix
+    assumption. c_cache (embedding + vector lookup) stays at the default 0.002
+    of frontier (~$0.00001 per query, typical of external vector stores).
     """
 
     c_cache: float = 0.002  # one cache lookup (embed + vector search)
-    c_small: float = 0.05  # small-model cost as a fraction of frontier
+    c_small: float = 0.20  # Haiku 4.5 ($1/$5) vs Opus 4.7 ($5/$25) — May 2026
     p_small: float = 0.50  # fraction of cache-misses routed to the small model
     s_target: float = 0.50  # "meaningful" = >= 2x cost reduction
-    provisional: bool = True
+    provisional: bool = False
 
 
 @dataclass(frozen=True)

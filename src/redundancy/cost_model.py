@@ -121,6 +121,16 @@ def render_doc(cost: CostConstants) -> str:
         "",
         f"**Status:** {flag}",
         "",
+    ]
+    if not cost.provisional:
+        lines += [
+            "**Source:** Anthropic API pricing, May 2026: Opus 4.7 = $5/$25 per "
+            "MTok (frontier), Haiku 4.5 = $1/$5 per MTok (small). 1:5 ratio "
+            "across both input and output → `c_small = 0.20` with no token-mix "
+            "assumption.",
+            "",
+        ]
+    lines += [
         "## Constants (normalized to c_frontier = 1.0)",
         "",
         "| Constant | Value | Meaning |",

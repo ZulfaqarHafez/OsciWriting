@@ -102,3 +102,16 @@ One entry per major decision, dated (PRD §5).
 - `docs/findings.md` rewritten as the consolidated negative-result write-up.
 - Outstanding for PRD-completeness: human spot-check on the 100-pair audit sample
   (currently only inter-LLM-validated); freeze cost-model constants.
+
+## 2026-05-20 — Cost-model constants frozen (PRD §4a)
+
+- Source: live Anthropic API pricing lookup (WebFetch + WebSearch, May 2026).
+  Opus 4.7 = $5/$25 per MTok (frontier), Haiku 4.5 = $1/$5 per MTok (small).
+  Clean 1:5 ratio across input and output → `c_small = 0.20` (placeholder was
+  0.05, which assumed a 20× cheaper small model — only 5× in reality).
+- Derived thresholds: **T1 = T3 = 0.17** (was 0.05). T5 = 0.70 unchanged (PRD §3,
+  not cost-derived). `provisional=False`; doc regenerated.
+- Re-read of decision runs at frozen bar: H1 still passes both arms; H3 strict
+  still passes (21.4% > 0.17), **H3 recall now fails** (15.2% < 0.17); **H5 gate
+  still fails both arms** (12.8% / 15.3% vs 0.70). Verdict unchanged: Abandon.
+- Outstanding for PRD-completeness: human PRD §8.5 audit (user time only).

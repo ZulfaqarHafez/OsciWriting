@@ -1,23 +1,25 @@
 # Cost Model and Derived Thresholds (PRD §4a)
 
-**Status:** PROVISIONAL — replace with real prices before the decision run
+**Status:** FROZEN
+
+**Source:** Anthropic API pricing, May 2026: Opus 4.7 = $5/$25 per MTok (frontier), Haiku 4.5 = $1/$5 per MTok (small). 1:5 ratio across both input and output → `c_small = 0.20` with no token-mix assumption.
 
 ## Constants (normalized to c_frontier = 1.0)
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
 | c_cache | 0.002 | one cache lookup (embed + vector search) |
-| c_small | 0.05 | small-model cost as fraction of frontier |
+| c_small | 0.2 | small-model cost as fraction of frontier |
 | p_small | 0.5 | fraction of cache-misses routed to small model |
 | s_target | 0.5 | required savings to call the project worthwhile |
 
 ## Derived thresholds
 
-- **T1 (H1 top-50 coverage)** = `0.0514`
-- **T3 (H3 fraction at >= S3)** = `0.0514`
+- **T1 (H1 top-50 coverage)** = `0.17`
+- **T3 (H3 fraction at >= S3)** = `0.17`
 - **S3** = `0.9` (calibrated from H5 at run time; this is the PRD default)
 - **T5 (H5 acceptability, gating)** = `0.7` (PRD §3 default)
-- feasible: `True` — min viable cache-hit rate = 0.0514 at p_small=0.5
+- feasible: `True` — min viable cache-hit rate = 0.1700 at p_small=0.5
 
 ## Sensitivity (min viable cache-hit rate)
 

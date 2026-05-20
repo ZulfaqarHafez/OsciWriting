@@ -48,7 +48,10 @@ def test_min_p_cache_boundary_is_one_minus_c_cache():
 def test_derive_thresholds_ties_t1_t3():
     d = derive_thresholds(CostConstants())
     assert d.T1 == d.T3
-    assert d.provisional is True
+    # Constants frozen 2026-05-20 from Anthropic API pricing; if they go back to
+    # placeholder values the run-time guard (a "pilot, not decision run" warning)
+    # also flips back, so the assertion mirrors the source.
+    assert d.provisional is CostConstants().provisional
 
 
 def test_sensitivity_table_shape():

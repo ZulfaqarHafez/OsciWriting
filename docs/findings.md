@@ -18,9 +18,17 @@ hardening.
 
 Both arms used N = 50,000 raw LMSYS-Chat-1M records, English first-turn extraction,
 exact dedup → 43,979, then per-arm near dedup (cosine ≥ 0.98). Judge = Claude Haiku
-4.5 (`claude-haiku-4-5-20251001`). Thresholds remain PROVISIONAL (cost-model
-placeholders); the only decision-bearing threshold is T5 = 70% from PRD §3, which is
-not cost-derived.
+4.5 (`claude-haiku-4-5-20251001`).
+
+**Cost-model thresholds frozen 2026-05-20** from public Anthropic API pricing:
+Opus 4.7 = $5 / $25 per MTok (frontier), Haiku 4.5 = $1 / $5 per MTok (small).
+The 1:5 ratio holds across both input and output → `c_small = 0.20`. Plugged into
+PRD §4a, this yields **T1 = T3 = 0.17** — the min cache-hit / coverage rate the
+economics need to clear `S_target = 0.50` (2× cost reduction). Headline `pass`
+booleans below were computed at run time with the v2.1 placeholders (T1=T3=0.05),
+so they over-state H1/H3 passes against the *frozen* bar. A re-read at the frozen
+thresholds is in §5; the H5 gate is **unchanged** (T5 = 0.70 is from PRD §3, not
+cost-derived).
 
 | Metric | Strict filter (subject n=6,481) | Recall filter (subject n=12,880) | Pass |
 | --- | --- | --- | --- |
@@ -129,10 +137,11 @@ on LMSYS-Arena specifically.
 
 ## 5. What does NOT change the verdict
 
-- **Provisional cost thresholds.** T1 and T3 are derived from placeholder prices
-  (`docs/cost_model.md`). Real prices change T1/T3 but **do not change T5 = 0.70**
-  (PRD §3 default, not cost-derived). H5 is the gate; H5 is independent of price
-  inputs.
+- **Frozen cost thresholds (T1 = T3 = 0.17)** at real Anthropic prices. H1 still
+  passes both arms by a wide margin (coverage 0.97–0.98 vs 0.17). H3 re-reads:
+  strict 21.4% > 0.17 (still pass); **recall 15.2% < 0.17 (now fail)**. Either
+  way, H5 remains the gate and **H5 fails both arms** at 12.8% / 15.3% vs T5 =
+  0.70 — and T5 is not cost-derived, so no plausible re-pricing rescues it.
 - **Filter choice (strict vs recall).** Both arms Abandon. The recall arm gives
   the cleaner picture (no high-band control sparsity); H5 still tops out at 15.3%.
 - **Stronger judge (Opus on the safer subset).** Headline survives.
@@ -144,9 +153,9 @@ on LMSYS-Arena specifically.
    "internally robust" not "judge-validated." Inter-LLM agreement (96.8%) is
    consistent with the verdict but does not replace the human audit. If
    judge/human agreement < 80%, PRD §8.5 falls back to fully-manual n=200.
-2. **Frozen cost-model constants** in `docs/cost_model.md`. Currently provisional.
-   Does not affect the verdict but is required for the cost arithmetic in any
-   negative-result write-up that references "would the economics have worked."
+2. ~~**Frozen cost-model constants**~~ — done 2026-05-20. Opus 4.7 / Haiku 4.5
+   pricing in `docs/cost_model.md`, T1 = T3 = 0.17 derived. §5 captures the
+   re-read against the frozen bar.
 3. **A note on the [0.80, 0.90) recall control inversion** in the published
    version — minor methodological caveat, does not change the gate.
 
