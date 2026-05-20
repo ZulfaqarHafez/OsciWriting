@@ -1,6 +1,6 @@
 # LLM Workload Redundancy Study
 
-**Status:** Pre-experiment, design locked (v2)
+**Status:** Pre-experiment, design locked (v2.1)
 **Author:** Zul Fhagez
 **Last updated:** 2026-05-19
 **Decision deadline:** within 1 week of data collection completion
@@ -45,6 +45,27 @@ the study must produce depends on *substitutability* and *economics*. Changes:
     not a cited result.
 11. **External-validity caveat added.** WildChat is consumer free-tier access; the
     motivating findings are enterprise/paid. The gap is now named in §12.
+
+### v2 → v2.1 (post-pilot)
+
+12. **Deduplication stage added (§8.6).** The first N=5000 pilot showed WildChat's
+    writing subset is dominated by mass copy-paste viral prompts — one "Midjourney
+    prompt generator" jailbreak repeated *verbatim* hundreds of times (top 4
+    clusters absorbed all 1474 strict-filtered prompts; H1 coverage degenerated to
+    1.0 with 0.0 noise; H3 hit 61% @ cos≥0.9). Without collapsing duplicates the
+    metrics measure copy-paste volume, not semantic redundancy across distinct
+    phrasings — and caching identical strings is a hashmap, not the project. v2.1
+    adds an exact (normalized-text) + near (cosine ≥ 0.98) dedup stage before any
+    metric, and reports the dedup rate as a first-class finding.
+13. **Primary dataset switched to LMSYS-Chat-1M; H1 degeneracy guard added.** The
+    re-pilot proved cosine-0.98 dedup does *not* remove the WildChat template
+    contaminant (it lives at 0.90–0.97: huge shared preamble, tiny variable
+    payload) and the post-dedup clustering was still 2 mega-blobs / 0 noise, which
+    the rubric falsely scored as H1 pass. Two fixes: (a) WildChat → cautionary
+    fallback, LMSYS-Chat-1M promoted to primary (§7), and (b) a symmetric
+    degeneracy guard so a flat-1.0 / zero-noise coverage envelope is an H1 Fail
+    (§8.4). The v1 "directly comparable to OpenAI's WildChat paper" claim is
+    withdrawn.
 
 ---
 
@@ -299,14 +320,26 @@ If WildChat approval is slow, fall back to LMSYS-Chat-1M (`lmsys/lmsys-chat-1m`)
 
 ## 7. Data sources
 
-### Primary: WildChat-1M
-1,000,000 real ChatGPT conversations on HuggingFace as `allenai/WildChat-1M`. Each
-row: `conversation_hash`, `conversation` (role/content list), `language`, model,
-timestamp, country, moderation tags.
+### Primary: LMSYS-Chat-1M (promoted in v2.1)
+1,000,000 conversations across 25 LLMs (`lmsys/lmsys-chat-1m`). First-turn English
+extraction is identical to WildChat (`conversation` list, `language`,
+`conversation_id`). Promoted to primary because the N=5000 WildChat pilot showed
+its writing subset is dominated by one viral "Midjourney prompt generator"
+template (see §8.6 and the decision log).
 
-### Fallback: LMSYS-Chat-1M
-1,000,000 conversations across 25 LLMs (`lmsys/lmsys-chat-1m`). Chatbot-Arena
-distribution differs (users comparing models); document if used instead.
+**Known skew:** LMSYS is Chatbot-Arena traffic (users comparing models), so prompts
+skew toward model-stress-testing and may be more polished or unusual than organic
+single-model usage. This is a *different* validity threat than WildChat's spam, and
+it weakens the v1 "directly comparable to OpenAI's WildChat paper" framing — that
+comparability claim is **withdrawn** in v2.1. Report this skew in findings; do not
+over-claim transfer to enterprise usage (§12).
+
+### Fallback: WildChat-1M (contaminated — cautionary)
+`allenai/WildChat-1M`, 1,000,000 ChatGPT conversations. Retained only as a
+cautionary comparison; the pilot proved its writing subset is template-spam
+dominated. Do not use for the decision run without the §8.6 dedup *and* a
+template-family handling step that the pilot showed cosine-0.98 dedup does not
+provide.
 
 ### Sample size — pilot acceptance test (not a cited result)
 N = 50,000 first-turn English writing prompts is the target for the decision run.
@@ -328,11 +361,13 @@ No sample-size claim is asserted in advance; it is an output of Day 2.
 ```
 [raw dataset]
   -> language + first-turn filter            (data.py)
+  -> EXACT dedup (normalized-text hash)      (dedup.py)   -- §8.6, before filtering
   -> three parallel arms:
        (a) writing filter           (filters.py)   -- the subject
        (b) unfiltered random sample (baseline.py)  -- control 1
        (c) scrambled-prompt control (baseline.py)  -- control 2 (null)
   -> prompt embedding                          (embed.py)
+  -> NEAR dedup per arm (cosine >= 0.98)       (dedup.py)   -- §8.6, before metrics
   -> UMAP reduction                            (reduce.py)
   -> HDBSCAN clustering + param sweep          (cluster.py)
   -> metrics                                   (metrics.py)
@@ -403,6 +438,15 @@ sweep with min/max reported. Noise fraction is reported for every cell — if no
 exceeds 60% across most of the sweep, H1 is recorded as Fail with the note "structure
 not separable at this granularity," distinct from "no structure exists."
 
+**Degeneracy guard (added v2.1).** The high-noise guard above has a symmetric blind
+spot the pilot walked straight through: coverage pinned at ~1.0 with ~0 noise and
+*no variation across the 36-cell sweep* means HDBSCAN swallowed everything into a
+couple of mega-blobs — equally meaningless, but it was scoring as an H1 **pass**.
+H1 is now also recorded as Fail when `coverage_min ≥ 0.99` AND `noise_median ≤ 0.01`
+AND `coverage_max − coverage_min < 0.01` (`cluster.is_degenerate`). A real
+concentration signal leaves a tail and moves as sweep params change; a flat-1.0
+envelope does not. This guard fires *regardless* of T1 and the control gap.
+
 ### 8.5 Metric definitions
 
 **H1 — top-N coverage:** Σ(sizes of N largest clusters) / total prompts (incl.
@@ -440,6 +484,31 @@ reason." Acceptability rate per band = (Acceptable + 0.5·Borderline) / total.
   `judge_transcripts.jsonl` for audit. A 100-pair manual spot-check validates the
   judge before its numbers are trusted; if judge/human disagree > 20%, H5 reverts to
   fully manual rating on a reduced sample (n=200) and the timeline absorbs it.
+
+### 8.6 Deduplication (added v2.1, post-pilot)
+
+The N=5000 pilot showed WildChat's writing subset is dominated by mass copy-paste
+viral prompts (one Midjourney-prompt-generator jailbreak repeated verbatim hundreds
+of times). Verbatim spam makes H1 degenerate (a few duplicate blobs swallow
+everything; coverage → 1.0, noise → 0.0, control gap → 0.0) and inflates H3/H4
+toward "we found copies of the same string," which a hashmap already solves. The
+thesis is about *semantic* redundancy across *distinct* user phrasings, so
+duplicates must be collapsed first.
+
+- **Exact pass** (`dedup.exact_dedup`): collapse records whose case- and
+  whitespace-normalized prompt is identical. Runs on the record pool *before* the
+  writing filter and arm split. No embedding needed.
+- **Near pass** (`dedup.near_dedup`): per arm, after embedding, greedily keep one
+  representative per blob of prompts within cosine ≥ 0.98 of each other. Runs
+  *before* any metric so H1/H3/H4 see deduplicated input. The cosine cutoff is
+  deliberately high (0.98) so it removes only near-verbatim copies, not the
+  semantic near-neighbors that H3/H5 are *supposed* to measure.
+- Both passes keep the first occurrence (stable) so seeding holds.
+- **The dedup rate is a reported finding**, not just preprocessing: "what fraction
+  of WildChat 'writing' is verbatim/near-verbatim spam" is independently
+  interesting and a stated deliverable (`headline_numbers.json["dedup"]`, §10).
+- All three arms are deduplicated identically; the scrambled null collapses far
+  less (token-shuffled prompts are not duplicates), which is itself the contrast.
 
 ---
 
@@ -498,8 +567,12 @@ expanded incorrectly.
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| WildChat license delay | Medium | Low | Fall back to LMSYS-Chat-1M |
+| LMSYS license delay | Medium | Low | WildChat is the (contaminated) fallback; pipeline supports both |
 | Strict filter biases subset toward H1/H3 | High | High | Recall-oriented second filter; rubric uses conservative numbers (8.2) |
+| Verbatim copy-paste spam dominates metrics | Confirmed on WildChat | High | Exact + near dedup (8.6); WildChat demoted, LMSYS primary (7) |
+| cos≥0.98 dedup misses viral templates (0.90–0.97) | Confirmed (re-pilot) | High | Dataset switch to LMSYS (7); revisit template-family collapse if LMSYS also shows it |
+| Degenerate clustering scored as H1 pass | Confirmed (re-pilot) | High | Symmetric degeneracy guard: flat-1.0/0-noise envelope → H1 Fail (8.4) |
+| LMSYS Arena skew (model-stress prompts, not organic) | Medium | Medium | Named in §7/findings; comparability-to-OpenAI claim withdrawn |
 | MiniLM cosine ≠ substitutability | High | High | S3 calibrated from H5, not asserted; H5 gates the decision (8.3, 8.5) |
 | HDBSCAN finds no separable structure | Medium | High | UMAP pre-reduction; param sweep; "not separable" ≠ "no structure" (8.4) |
 | Judge unreliable | Medium | High | 100-pair human spot-check; fallback to manual n=200 (8.5) |

@@ -45,7 +45,7 @@ class Judge:
         self._tpath = transcript_path
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _ask(self, kind: str, prompt: str) -> str:
+    def _ask(self, kind: str, prompt: str, **extra) -> str:
         msg = self._client.messages.create(
             model=self._model,
             max_tokens=200,
@@ -53,8 +53,9 @@ class Judge:
             messages=[{"role": "user", "content": prompt}],
         )
         text = msg.content[0].text if msg.content else ""
+        record = {"kind": kind, "prompt": prompt, "reply": text, **extra}
         with self._tpath.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"kind": kind, "prompt": prompt, "reply": text}) + "\n")
+            fh.write(json.dumps(record) + "\n")
         return text
 
     @staticmethod
@@ -92,6 +93,8 @@ class Judge:
                     prompt_b=it["prompt_b"][:1500],
                     response_a=it["response_a"][:1500],
                 ),
+                band=it["band"],
+                arm=it.get("arm", "subject"),
             )
             v = self._verdict(txt)
             score = {"ACCEPTABLE": 1.0, "BORDERLINE": 0.5}.get(v, 0.0)

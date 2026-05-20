@@ -51,7 +51,9 @@ def _build_h5_items(prompt_emb, prompts, responses, bands, per_band, seed):
     return items
 
 
-def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
+def run(
+    n: int, dataset: str, use_judge: bool, seed: int, filter_name: str = "strict"
+) -> dict:
     from .data import load_records, prompts as get_prompts, responses as get_responses
     from .dedup import exact_dedup, near_dedup
     from .embed import embed
@@ -86,12 +88,12 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
     strict_idx = filters.apply(p_all, "strict")
     recall_idx = filters.apply(p_all, "recall")
 
-    subject = [records[i] for i in strict_idx]
+    subject_idx = recall_idx if filter_name == "recall" else strict_idx
+    subject = [records[i] for i in subject_idx]
     if len(subject) < 50:
         raise RuntimeError(
-            f"only {len(subject)} writing prompts from {len(records)} deduped "
-            "records; increase --n (strict filter biases yield down — PRD §8.2; "
-            "exact dedup further shrinks it — PRD §8.6)"
+            f"only {len(subject)} writing prompts (filter={filter_name}) from "
+            f"{len(records)} deduped records; increase --n (PRD §8.2, §8.6)"
         )
     unfiltered = baseline.unfiltered_random(records, len(subject), seed)
     scrambled = baseline.scrambled(subject, seed)
@@ -165,6 +167,7 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
             "records_after_exact_dedup": len(records),
             "strict_n": len(strict_idx),
             "recall_n": len(recall_idx),
+            "active": filter_name,
             "note": "rubric uses conservative (recall) numbers if they diverge — PRD §8.2",
         },
         "dedup": {
@@ -216,9 +219,13 @@ def run(n: int, dataset: str, use_judge: bool, seed: int) -> dict:
         s_items = _build_h5_items(
             s_pe, s_prompts, s_resp, CONFIG.h5_bands, CONFIG.h5_pairs_per_band, seed
         )
+        for it in s_items:
+            it["arm"] = "subject"
         z_items = _build_h5_items(
             z_pe, z_prompts, z_resp, CONFIG.h5_bands, CONFIG.h5_pairs_per_band, seed
         )
+        for it in z_items:
+            it["arm"] = "scrambled"
         h5_subj = judge.substitutability(s_items)
         h5_ctrl = judge.substitutability(z_items)
 
@@ -319,6 +326,13 @@ def main(argv: list[str] | None = None) -> int:
         help="primary is LMSYS (PRD §7, v2.1); wildchat retained as contaminated fallback",
     )
     ap.add_argument("--no-judge", action="store_true", help="pilot: skip H2/H5 (no API cost)")
+    ap.add_argument(
+        "--filter",
+        choices=["strict", "recall"],
+        default="strict",
+        help="writing filter (PRD §8.2). 'recall' is the conservative arm — rubric "
+        "uses it when strict/recall yields diverge materially.",
+    )
     ap.add_argument("--seed", type=int, default=CONFIG.seed)
     args = ap.parse_args(argv)
 
@@ -327,7 +341,13 @@ def main(argv: list[str] | None = None) -> int:
             "WARNING: thresholds are PROVISIONAL. This is a pilot, not the decision "
             "run. Freeze docs/cost_model.md with real prices first (PRD §4a).\n"
         )
-    headline = run(args.n, args.dataset, use_judge=not args.no_judge, seed=args.seed)
+    headline = run(
+        args.n,
+        args.dataset,
+        use_judge=not args.no_judge,
+        seed=args.seed,
+        filter_name=args.filter,
+    )
     print(json.dumps(headline["decision"], indent=2))
     print(f"\nresults/{(RESULTS / 'latest.txt').read_text().strip()}/")
     return 0

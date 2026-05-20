@@ -64,3 +64,41 @@ One entry per major decision, dated (PRD §5).
 - Not chosen: template-family collapse / filter-tightening (revisit only if LMSYS
   also shows template contamination).
 - Tests: 30 pass (added test_cluster.py, test_dedup.py). Next: re-pilot on LMSYS.
+
+## 2026-05-20 — run 20260519T161458Z
+
+- N=5000 dataset=lmsys thresholds_provisional=True
+- Outcome: **Pilot — no decision** (H5 gate: NOT EVALUATED)
+- Action: Run without --no-judge for the H5-gated decision (PRD §9).
+
+## 2026-05-20 — run 20260520T052203Z
+
+- N=5000 dataset=lmsys thresholds_provisional=True
+- Outcome: **Abandon** (H5 gate: FAILED)
+- Action: Document negative result in docs/findings.md. No re-scope on a failed H5.
+
+## 2026-05-20 — run 20260520T115124Z
+
+- N=50000 dataset=lmsys thresholds_provisional=True
+- Outcome: **Abandon** (H5 gate: FAILED)
+- Action: Document negative result in docs/findings.md. No re-scope on a failed H5.
+
+## 2026-05-20 — run 20260520T134220Z
+
+- N=50000 dataset=lmsys thresholds_provisional=True
+- Outcome: **Abandon** (H5 gate: FAILED)
+- Action: Document negative result in docs/findings.md. No re-scope on a failed H5.
+
+## 2026-05-20 — Consolidated decision: Abandon survives strict + recall + inter-LLM
+
+- run 20260520T115124Z (strict, n=6,481): H5 best 12.8% @ [0.95,1.00), gap −15.7 pp.
+- run 20260520T134220Z (recall, n=12,880): H5 best 15.3% @ [0.95,1.00), gap +1.2 pp.
+- Inter-LLM sensitivity check (Opus 4.7 vs Haiku 4.5, 100 strict-run pairs):
+  96.8% agreement on the 62 auditable pairs; 38 declined by Opus safety layer
+  (separate finding about LMSYS-Arena NSFW contamination on the writing slice).
+  Explicitly NOT the PRD §8.5 human audit.
+- Code added: pipeline `--filter strict|recall`; judge transcripts now record
+  `band` and `arm`; `audit.py` (sample / score / inter-llm CLI) + tests.
+- `docs/findings.md` rewritten as the consolidated negative-result write-up.
+- Outstanding for PRD-completeness: human spot-check on the 100-pair audit sample
+  (currently only inter-LLM-validated); freeze cost-model constants.
