@@ -166,3 +166,27 @@ One entry per major decision, dated (PRD §5).
   - HP3 p50=0.325 (req 0.60).
   - HP4 0 of 180 Pareto cells positive-ROI.
 - findings_v3.md updated with full data including HP2/HP4. Verdict robust.
+
+## 2026-05-21 — PRD v4 (personal prefetch) on author's Claude export: HP1 FAIL → Abandon
+
+- Wrote `PRD_v4.md` (per-user, multi-session prefetch — bends the cross-user
+  bottleneck v2.2/v3 hit by using ONE user's own history as the predictor and
+  cache). Added `src/redundancy/user_history.py` (Claude export loader) and
+  `src/redundancy/personal_prefetch.py` (HP1–HP4 evaluation).
+- Ran on the author's Claude.ai chat history zip (gitignored as personal
+  data; pattern `data-*.zip`). 159 raw → 148 non-empty → 136 with paired
+  user/asst turns.
+- **HP1 recurring fraction: 7.4%** (10/135 conversations with a prior at
+  cos ≥ 0.85). Required ≥ 30%. **FAIL** by ~4× (same magnitude as v2.2 H5
+  and v3 HP1).
+- Median cosine (current ↔ best prior) = 0.40; PRD v4 expected ≥ 0.50.
+  Author's usage is exploration-shaped, not workflow-shaped.
+- The 10 recurring conversations cluster into ~3 workflows: lecture-notes
+  generation, PDF-input processing, project/PRD drafting. Several are
+  byte-identical (cos = 1.000) — same prompt re-asked in a new conv.
+- HP2/HP4 not evaluated (gate fired at HP1). HP3 cold-start passed but on
+  n=5 — noise.
+- Three Abandons across three studies (v2.2, v3, v4) — each at its first
+  gate, each by multiples (not tenths). The cross-prompt structural
+  regularity any of these mechanisms needs is absent in both LMSYS open-
+  domain English AND this user's personal Claude usage.
