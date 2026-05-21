@@ -1,6 +1,6 @@
 # LLM Workload Redundancy Study
 
-**Status:** Pre-experiment, design locked (v2.1)
+**Status:** Pre-experiment, design locked (v2.2)
 **Author:** Zul Fhagez
 **Last updated:** 2026-05-19
 **Decision deadline:** within 1 week of data collection completion
@@ -66,6 +66,16 @@ the study must produce depends on *substitutability* and *economics*. Changes:
     degeneracy guard so a flat-1.0 / zero-noise coverage envelope is an H1 Fail
     (§8.4). The v1 "directly comparable to OpenAI's WildChat paper" claim is
     withdrawn.
+
+### v2.1 → v2.2 (post-decision investigation)
+
+14. **Multi-turn predictability investigation added (§15).** The first-turn
+    semantic-cache study reached Abandon; user asked whether *predictive
+    pre-generation* (speculate likely next prompts, pre-compute responses) is
+    feasible. That's a different mechanism. §15 measures it as an investigation
+    (not a new go/no-go) on conversations with ≥2 user turns, with both a MiniLM
+    retriever and a TF-IDF "graph-similarity" retriever, and the H5-gated
+    rubric of §3-§4 remains unchanged for the first-turn question.
 
 ---
 
@@ -616,3 +626,44 @@ Anything here can be a follow-up after the core decision.
 Do not skip steps. Do not start the architecture before the numbers are in. Do not
 freeze thresholds after seeing results. Do not re-scope on a failed H5. Do not start
 a new project idea before this one is resolved.
+
+---
+
+## 15. Multi-turn predictability (added v2.2)
+
+**Status:** Investigation, not a re-decision. The first-turn semantic-cache
+study reached Abandon per §9; that verdict stands. §15 measures a *different
+mechanism* — speculative pre-generation — to scope a possible follow-on
+project. No rubric, no Abandon framing.
+
+**Question.** Given a user's turn N, how often does the actual turn N+1 lie
+within cosine T of the *responses you would have pre-generated* by looking up
+the K nearest turn N\* in OTHER conversations? Predictability above the random
+baseline is necessary (not sufficient) for speculative pre-generation to pay
+off; substitutability (the H5 result, ~13–15% in the highest band) still
+applies on top.
+
+**Metric.** Hit@K@T per (K ∈ {1, 5, 10, 50}, T ∈ {0.7, 0.8, 0.9}). Computed for
+both a MiniLM retriever (consistent with the rest of the study) and a TF-IDF
+retriever (the "graph-similarity" arm — lexical-overlap similarity over the
+bipartite prompt-token graph, contrasting MiniLM's smoothed-out semantics).
+Reported with two controls: random K\*-indices (does retrieval beat guessing?)
+and within-conversation `cosine(turn_N, turn_{N+1})` (would within-session
+caching be the easier mechanism?). Quality at hit is NOT judged in this
+investigation; §15 measures only "did the retrieval predict close to the
+right next prompt." Combine with the §3 H5 result for the full feasibility
+picture.
+
+**Data.** Re-loaded LMSYS-Chat-1M keeping full conversations (§13's first-turn
+restriction is amended here). Seeded reservoir sample of N conversations with
+≥2 English user turns. New parquet cache `lmsys_multiturn_n*.parquet`.
+
+**Implementation.** `src/redundancy/multi_turn.py` (loader wrapper, pair
+extract, MiniLM + TF-IDF kNN, hit@K@T, controls, CLI). Same-conv neighbors are
+filtered before counting. CLI: `python -m redundancy.multi_turn --n 5000`.
+
+**Reading the result.** Lift over random = the retrieval signal. If MiniLM and
+TF-IDF lifts converge at zero, prediction is not feasible on this corpus. If
+TF-IDF beats MiniLM, the "graph-similarity is a better predictor than
+embedding-cosine" hypothesis gets traction. Same-conv consecutive cosine high
+would suggest the within-session caching variant is the practical line.

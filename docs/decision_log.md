@@ -128,3 +128,41 @@ One entry per major decision, dated (PRD §5).
   **not** invalidate the judge or trigger the §8.5 fall-back, because the
   content-rule question and the audit question are orthogonal.
 - PRD §8.5 substitutability audit still owed.
+
+## 2026-05-21 — PRD v3 (prefetch feasibility) drafted + decision-run complete: Abandon
+
+- v2.2 cost-cache study reached Abandon. User clarified actual interest:
+  Gmail-style speculative prefetch (latency optimization), not cost reduction.
+  Wrote `PRD_v3.md` and a separate v3 pipeline (`prefetch.py`,
+  `cost_model_v3.py`, frozen `docs/cost_model_v3.md`). v2.2 study unchanged.
+- v3 §15 multi-turn pilot (15,132 turn-pairs from N=5k LMSYS conversations):
+  - **HP1 (predictability lift)** best +5.7 pp (MiniLM K=50 T_pred=0.7);
+    threshold +10 pp; **FAIL**. TF-IDF arm matched MiniLM (+4.8 pp) —
+    graph-similarity didn't beat the embedding retriever.
+  - **HP3 (within-session)** p50 = 0.325 (req ≥0.60); frac ≥0.7 = 17.8%
+    (req ≥30%); **FAIL**. Users don't rephrase next prompts.
+  - **HP2/HP4** not evaluated — per §9 step 1, failed HP1 → Abandon
+    regardless of downstream hypotheses. Skipped the judge API spend.
+- **Decision: Abandon.** `docs/findings_v3.md` written; honest
+  re-read of the +10 pp threshold included (eyeballed but defensible — even at
+  +5.7 pp lift the per-turn ROI is implausible at any latency-value).
+- Two independent gates on the same dataset now Abandon:
+  - v2.2: H5 substitutability (responses don't transfer at high cosine).
+  - v3: HP1 predictability (next prompts don't predict each other above margin).
+  Same dataset; the corpus simply does not exhibit the cross-prompt structural
+  regularity that *either* mechanism needs.
+
+## 2026-05-21 — v3 full pipeline (with judge) confirms quadruple FAIL
+
+- After "try again" the full prefetch.py was re-run WITH the HP2 judge
+  (run prefetch_20260521T063300Z, 172 judge calls). Added retry-on-5xx logic
+  in judge._ask (transient Anthropic 500 mid-run on first attempt).
+- All four hypotheses fail their pre-committed thresholds:
+  - HP1 lift +5.67 pp (req +10 pp).
+  - **HP2** quality at T_serve=0.95: 20.4% (req 60%) — confirms v2.2 H5 finding
+    on multi-turn slice at stricter match condition. ~20% vs 12.8–15.3% on
+    first-turn = multi-turn is somewhat more substitutable, but nowhere near
+    safe to serve.
+  - HP3 p50=0.325 (req 0.60).
+  - HP4 0 of 180 Pareto cells positive-ROI.
+- findings_v3.md updated with full data including HP2/HP4. Verdict robust.

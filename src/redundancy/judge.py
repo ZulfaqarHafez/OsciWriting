@@ -46,12 +46,33 @@ class Judge:
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _ask(self, kind: str, prompt: str, **extra) -> str:
-        msg = self._client.messages.create(
-            model=self._model,
-            max_tokens=200,
-            temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        import time
+        from anthropic import APIStatusError, APITimeoutError, RateLimitError, InternalServerError
+
+        delay = 1.0
+        last_err: Exception | None = None
+        for attempt in range(6):
+            try:
+                msg = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=200,
+                    temperature=0.0,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except (InternalServerError, RateLimitError, APITimeoutError) as e:
+                last_err = e
+                time.sleep(delay)
+                delay = min(delay * 2, 32.0)
+            except APIStatusError as e:
+                if 500 <= getattr(e, "status_code", 0) < 600:
+                    last_err = e
+                    time.sleep(delay)
+                    delay = min(delay * 2, 32.0)
+                else:
+                    raise
+        else:
+            raise RuntimeError(f"judge call failed after retries: {last_err!r}")
         text = msg.content[0].text if msg.content else ""
         record = {"kind": kind, "prompt": prompt, "reply": text, **extra}
         with self._tpath.open("a", encoding="utf-8") as fh:
