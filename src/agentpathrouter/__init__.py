@@ -1,0 +1,24 @@
+"""AgentPathRouter — path-level cache + speculative prefetcher for agent workflows.
+
+Implements the system described in the Agentic Execution Entropy PRD:
+    - PathCache:           (execution_state_hash -> cached tool output)
+    - EntropyEstimator:    n-gram model over tool sequences, gives next-tool distribution
+    - SpeculativePrefetcher: pre-fires top-1 predicted tool call in parallel with LLM reasoning
+    - Middleware:          glues the three together around a tool-calling agent loop
+"""
+
+from .entropy import path_entropy, coverage_curve, extract_tool_sequence
+from .path_cache import PathCache
+from .entropy_estimator import NgramEntropyEstimator
+from .speculative import SpeculativePrefetcher
+from .middleware import AgentPathRouter
+
+__all__ = [
+    "path_entropy",
+    "coverage_curve",
+    "extract_tool_sequence",
+    "PathCache",
+    "NgramEntropyEstimator",
+    "SpeculativePrefetcher",
+    "AgentPathRouter",
+]
