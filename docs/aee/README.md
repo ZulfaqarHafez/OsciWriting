@@ -59,20 +59,38 @@ Pick with `--source <name>`. All HF sources fall through to a clean
 | `synthetic` | in-process | PRD §6.3 stand-in (always works) |
 | `auto` | yunjue → synthetic | Default; tries yunjue, silent fallback |
 
-### Generating τ-bench traces locally
+### Using τ2-bench's shipped simulation results
+
+The repo ships ~10,830 real simulations in
+`data/tau2/results/final/` across retail / airline / telecom / telecom-
+workflow domains. No LLM credits needed — clone and point the loader:
 
 ```bash
-git clone https://github.com/sierra-research/tau2-bench
-cd tau2-bench && uv sync
-uv run python -m tau2 run-and-eval --domain retail \
-    --agent-llm gpt-4o-mini --num-trials 200
-# back in this repo:
+git clone https://github.com/sierra-research/tau2-bench /tmp/tau2-bench
 python3 scripts/run_entropy_analysis.py \
-    --source tau_bench --tau-bench-dir /path/to/tau2-bench/data/simulations
+    --source tau_bench --tau-bench-dir /tmp/tau2-bench/data/tau2/results/final
 ```
+
+To generate fresh traces, see the upstream README (needs LLM API keys).
+
+### TRAIL benchmark
+
+```bash
+git clone https://github.com/patronus-ai/trail-benchmark /tmp/trail-benchmark
+python3 scripts/run_entropy_analysis.py \
+    --source trail --trail-dir /tmp/trail-benchmark --trail-subset all
+```
+
+Subsets: `gaia` (117 traces), `swe_bench` (31 traces), `all` (default).
 
 ## Not yet done (explicit follow-ups)
 
+- **Second taxonomy axis: step-level cacheability.** Real-data falsification
+  on τ-retail (80% cost saved at 0.11% quality regression despite
+  `FULL_AGENT` classification) shows path entropy alone is insufficient.
+  The 2D regime grid is proposed in `docs/aee/findings.md`. Implementation:
+  add a cacheability signal (fraction of `(tool, args)` triples that
+  repeat in-corpus) and switch `taxonomy.classify` to a 2D rule.
 - **Calibrate regime thresholds** on Yunjue / Nemotron / Hermes — current cutoffs are synthetic-only.
 - **Deterministic-pipeline implementation** of a top-K-path workflow as the comparison point for the `DETERMINISTIC` regime (expected to push cost savings from ~78% to ~95%).
 - Run on real Yunjue / Nemotron / Hermes — drivers ready, blocked on HF egress in this container.

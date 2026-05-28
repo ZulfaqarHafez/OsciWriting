@@ -70,6 +70,12 @@ def load_corpus(source: str, args: argparse.Namespace) -> tuple[str, list[dict]]
         rows = load("tau_bench", dir_path=args.tau_bench_dir)
         return f"tau_bench:{args.tau_bench_dir}", rows
 
+    if source == "trail":
+        if not args.trail_dir:
+            raise SystemExit("--source trail requires --trail-dir <path>")
+        rows = load("trail", dir_path=args.trail_dir, subset=args.trail_subset)
+        return f"trail:{args.trail_subset}", rows
+
     if source == "auto":
         # PRD primary source first; fall back silently to synthetic.
         try:
@@ -257,6 +263,10 @@ def main() -> None:
     )
     ap.add_argument("--tau-bench-dir", type=str, default=None,
                     help="Directory of tau2-bench simulation JSON files (for --source tau_bench).")
+    ap.add_argument("--trail-dir", type=str, default=None,
+                    help="Path to a cloned trail-benchmark repo (for --source trail).")
+    ap.add_argument("--trail-subset", type=str, default="all",
+                    choices=["all", "gaia", "swe_bench"])
     ap.add_argument("--n-synthetic", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--train-frac", type=float, default=0.6)

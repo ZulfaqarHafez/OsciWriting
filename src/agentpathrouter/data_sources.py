@@ -171,7 +171,15 @@ def load_hermes_filtered(split: str = "train") -> list[dict]:
 
 
 def load_tau_bench(dir_path: str | Path) -> list[dict]:
-    """Load τ-bench simulation traces from a local directory of JSON files."""
+    """Load τ-bench simulation traces from a local directory of JSON files.
+
+    Handles three layouts the tau2-bench repo uses interchangeably:
+        * a flat list of simulation dicts
+        * a single simulation dict
+        * a results envelope ``{timestamp, info, tasks, simulations: [...]}``
+          (produced by `tau2 run-and-eval`; this is the format shipped in
+          ``tau2-bench/data/tau2/results/final/``).
+    """
     p = Path(dir_path)
     if not p.exists():
         raise DatasetUnavailable(f"tau-bench dir not found: {p}")
@@ -181,8 +189,11 @@ def load_tau_bench(dir_path: str | Path) -> list[dict]:
             data = json.loads(jf.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        # A file may hold a single sim or a list of sims
-        sims = data if isinstance(data, list) else [data]
+        # Unwrap results envelope first.
+        if isinstance(data, dict) and isinstance(data.get("simulations"), list):
+            sims = data["simulations"]
+        else:
+            sims = data if isinstance(data, list) else [data]
         for i, sim in enumerate(sims):
             if isinstance(sim, dict):
                 sim.setdefault("id", f"{jf.stem}#{i}")
@@ -190,6 +201,100 @@ def load_tau_bench(dir_path: str | Path) -> list[dict]:
     if not rows:
         raise DatasetUnavailable(f"no JSON traces found under {p}")
     return _normalise(rows)
+
+
+# ---------------------------------------------------------------------------
+# TRAIL benchmark: span-tree (OpenTelemetry-style) traces
+# ---------------------------------------------------------------------------
+#
+# TRAIL (github.com/patronus-ai/trail-benchmark) ships 117 GAIA + 31
+# SWE-Bench traces as nested OTel span trees. Each span has a ``span_name``
+# (function/tool name) and optionally ``child_spans``. For AEE entropy
+# analysis we extract the in-tree-order sequence of "agent-decision" spans:
+#
+#   * GAIA convention: tool calls are spans whose name ends with "Tool".
+#   * SWE-Bench convention: agents emit code instead of named tool spans,
+#     so we additionally keep "Step N" iteration markers and the terminal
+#     "FinalAnswerTool" to recover a meaningful step sequence.
+#
+# Layout:
+#   trail-benchmark/benchmarking/data/GAIA/<hash>.json
+#   trail-benchmark/benchmarking/data/SWE Bench/<hash>.json
+#
+
+import re as _re
+
+_TRAIL_TOOL_PAT = _re.compile(r"(.*Tool|Step\s+\d+)$")
+
+
+def _trail_walk_tools(span: dict) -> list[str]:
+    """Pre-order DFS of a span tree, keeping spans whose names look like
+    agent decisions (tool calls or step markers)."""
+    out: list[str] = []
+    name = span.get("span_name")
+    if isinstance(name, str) and _TRAIL_TOOL_PAT.match(name):
+        out.append(name)
+    for child in span.get("child_spans") or []:
+        out.extend(_trail_walk_tools(child))
+    return out
+
+
+def load_trail(dir_path: str | Path, subset: str = "all") -> list[dict]:
+    """Load TRAIL traces.
+
+    ``subset``:
+        * ``"gaia"``       — 117 GAIA traces (multi-step web/research agents)
+        * ``"swe_bench"``  — 31 SWE-Bench traces (coding agents)
+        * ``"all"``        — both (default)
+
+    ``dir_path`` should point at the repo root (containing
+    ``benchmarking/data/``) or at ``benchmarking/data/`` directly.
+    """
+    root = Path(dir_path)
+    if not root.exists():
+        raise DatasetUnavailable(f"trail dir not found: {root}")
+
+    # Be flexible about where the user pointed us.
+    candidates = [root, root / "benchmarking" / "data", root / "data"]
+    data_dir = next((c for c in candidates if (c / "GAIA").exists()), None)
+    if data_dir is None:
+        raise DatasetUnavailable(
+            f"could not find TRAIL data dir under {root} "
+            "(expected benchmarking/data/GAIA)"
+        )
+
+    subdirs = []
+    if subset in ("gaia", "all"):
+        subdirs.append(data_dir / "GAIA")
+    if subset in ("swe_bench", "all"):
+        subdirs.append(data_dir / "SWE Bench")
+    if not subdirs:
+        raise ValueError(f"unknown TRAIL subset: {subset!r}")
+
+    out: list[dict] = []
+    for sd in subdirs:
+        if not sd.exists():
+            continue
+        for jf in sorted(sd.glob("*.json")):
+            try:
+                data = json.loads(jf.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            spans = data.get("spans") or []
+            tools: list[str] = []
+            for s in spans:
+                tools.extend(_trail_walk_tools(s))
+            if not tools:
+                continue
+            out.append({
+                "id": data.get("trace_id") or jf.stem,
+                "tools": tools,
+                "args": {"subset": sd.name, "task": jf.stem[:32]},
+                "raw": {"file": str(jf)},
+            })
+    if not out:
+        raise DatasetUnavailable(f"no usable TRAIL traces under {data_dir}")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +308,7 @@ SOURCES = {
     "hermes_reasoning": load_hermes_reasoning,
     "hermes_filtered": load_hermes_filtered,
     "tau_bench": load_tau_bench,
+    "trail": load_trail,
 }
 
 
