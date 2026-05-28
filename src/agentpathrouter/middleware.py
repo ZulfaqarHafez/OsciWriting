@@ -142,11 +142,26 @@ class AgentPathRouter:
         self.cache.put(actual_tool, history, args, value)
         return value
 
-    def run_trace(self, tools: list[str], args: dict) -> tuple[list[Any], RunMetrics]:
-        """Execute one full trace step-by-step and return outputs + metrics."""
+    def run_trace(
+        self,
+        tools: list[str],
+        args: dict,
+        per_step_args: list[dict] | None = None,
+    ) -> tuple[list[Any], RunMetrics]:
+        """Execute one full trace step-by-step and return outputs + metrics.
+
+        ``per_step_args`` (optional) supplies a separate args dict per tool
+        call. When provided, the cache key for step ``i`` uses
+        ``per_step_args[i]`` instead of the shared ``args``. This matters
+        for real corpora where individual tool calls carry their own
+        arguments (e.g. ``find_user_id_by_email(email="...")``); using the
+        per-call args is what makes cache hits a measure of real
+        cacheability rather than corpus-level replay structure.
+        """
         metrics = RunMetrics()
         outputs: list[Any] = []
         for i, tool in enumerate(tools):
             history = tuple(tools[:i])
-            outputs.append(self.step(history, tool, args, metrics))
+            step_args = per_step_args[i] if per_step_args is not None else args
+            outputs.append(self.step(history, tool, step_args, metrics))
         return outputs, metrics

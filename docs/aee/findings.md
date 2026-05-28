@@ -46,69 +46,92 @@ Nemotron / Hermes runs are still pending. But two real-data corpora are
 on GitHub and *are* reachable: TRAIL (Patronus) and τ2-bench (Sierra).
 Both clone in seconds and run through the same driver.
 
-### Headline cross-corpus table
+### Measurement caveat that became its own finding
 
-| Corpus           | Traces | Unique paths | Path entropy (bits) | Top-3 | Taxonomy verdict | Best arm           | Cost saved | Qual.reg. |
-|------------------|-------:|-------------:|--------------------:|------:|------------------|--------------------|-----------:|----------:|
-| Synthetic FR     |  1,000 |            5 |                1.02 | 95.4% | `DETERMINISTIC`  | cache+spec+routing |     78.2%  |    0.30%  |
-| TRAIL (all)      |    148 |           71 |                5.06 | 39.2% | `HYBRID`         | cache+spec+routing |     19.6%  |    0.61%  |
-| τ-retail (1822)  |  1,822 |          669 |                8.43 |  6.7% | `FULL_AGENT`     | cache+spec+routing | **80.0%**  |    0.11%  |
-| τ2-bench (all)   | 10,830 |        7,673 |               12.37 |  1.9% | `FULL_AGENT`     | cache+spec+routing |     46.5%  |    1.12%  |
+The first pass through this analysis used a coarse `args` proxy
+(first 64 chars of the task description) for every step in a trace —
+making the cache key identical across all 4 replay trials of the same
+task. Re-running with the **real per-call arguments** extracted from
+each tool_call (`tc["arguments"]`, e.g. `{"email": "mia@example.com"}`)
+dropped τ-retail's headline number from a misleading 80.0% to a real
+**66.0% cost saved at 0.17% quality regression**.
 
-τ-retail is the headline. **The path-entropy taxonomy classified it
-`FULL_AGENT` — meaning "AEE interventions don't help" — yet the actual
-ablation produced an 80% cost reduction at 0.11% quality regression.**
+A separate artifact appeared on TRAIL: spans don't expose per-call
+arguments (they live inside `LiteLLMModel.__call__` as free-form text),
+so empty-args keys collapsed and over-counted cache hits. The honest
+move is to **namespace TRAIL cache keys by trace_id** so cross-trace
+collisions stay impossible; that drops TRAIL cache hit rate to 0% and
+brings cost savings down to 19.6%, all from routing.
 
-That's a falsification of the taxonomy as currently designed.
+The tau-bench numbers below use real per-call args. The TRAIL numbers
+disable cache hits to avoid the over-count. The synthetic numbers use
+the original per-trace args (different `date_offset` per trace).
 
-### Falsification: path entropy is not the only signal that matters
+### Headline cross-corpus table (corrected)
 
-Why does τ-retail save 80% despite high path entropy?
+| Corpus           | Traces | H(path) corpus | H(path) within-task | Top-3 | Taxonomy   | Cache hit | Cost saved | Qual.reg. |
+|------------------|-------:|---------------:|--------------------:|------:|------------|----------:|-----------:|----------:|
+| Synthetic FR     |  1,000 |        1.02 b  |                 n/a | 95.4% | `DET`      |     0.0%  |     78.2%  |    0.30%  |
+| TRAIL (all)      |    148 |        5.06 b  |                 n/a | 39.2% | `HYBRID`   |     0.0%* |     19.6%  |    0.61%  |
+| τ-retail         |  1,822 |        8.43 b  |             2.30 b  |  6.7% | `FULL`     |   **63.1%**|   **66.0%**|    0.17%  |
+| τ2-bench (all)   | 10,830 |       12.37 b  |             4.31 b  |  1.9% | `FULL`     |    39.4%  |     44.0%  |    1.12%  |
+
+\* TRAIL cache hits disabled (per-trace namespacing) to avoid empty-args
+over-count; the spans don't expose per-tool-call args.
+
+### What survives and what doesn't
+
+The v1 finding said "path entropy is insufficient; step-level
+cacheability is a separate signal needed for the taxonomy." The
+verification process showed:
+
+1. **The headline number was inflated by ~14 pp** (80 → 66) when args
+   were extracted properly. **Still substantial, still surprising for
+   a `FULL_AGENT` classification.**
+2. **The cacheability finding survives, but its proper signal isn't
+   step-level argument repetition** — it's **within-task path entropy
+   after clustering**. tau-retail's corpus entropy is 8.43 bits across
+   114 tasks (mixture distribution), but its within-task entropy is
+   only 2.30 bits (moderate — roughly 5 effective paths per task). The
+   within-task signal is what predicts the 63% cache hit rate, not the
+   corpus-level signal.
+3. **The taxonomy critique still holds**, but the refined version is:
+   *"path entropy must be measured within-task on multi-trial corpora;
+   corpus-level entropy hides the actual structure."*
+
+### Refined recommendation for the paper
+
+Two-axis regime grid replaced by a **clustering-then-classification**
+pipeline:
 
 ```
-[phase4 ablation, tau_retail]
-  arm                     cache   spec  route   qreg     USD/1k   saved
-  baseline                 0.0%   0.0%   0.0%  0.00%   195.4831    0.0%
-  cache_only              79.1%   0.0%   0.0%  0.00%    40.7770   79.1%   ← cache alone
-  cache+spec              79.1%   1.8%   0.0%  0.00%    40.7770   79.1%
-  cache+spec+routing      79.1%   1.0%   0.9%  0.11%    39.1546   80.0%
+1. Cluster traces by task_id / query / intent.
+2. For each cluster, compute within-cluster path entropy.
+3. Classify the workload by the *distribution* of within-cluster entropies:
+     - all clusters near zero          → DETERMINISTIC (pipeline)
+     - clusters moderately spread      → HYBRID (AgentPathRouter)
+     - clusters all uniform            → FULL_AGENT (frontier only)
 ```
 
-**79.1% of all steps are cache hits.** The taxonomy looks at the
-distribution over *full execution paths* and sees high entropy. But
-inside any single trace — and across the four replay trials per task
-that τ2-bench runs — individual `(tool, args)` triples repeat heavily.
-A request looks up a customer by phone, then by id, then by order — and
-across trials those calls re-fire with identical arguments.
+Honest hook now reads:
 
-Path entropy is a corpus-level signal; cacheability is a *step-level*
-signal. They're not the same and the current taxonomy conflates them.
+> We show that **66% of inference cost** in a state-of-the-art customer-
+> service benchmark (τ-bench retail) **can be saved at 0.17% quality
+> regression** via path-level caching plus small-model routing. The
+> taxonomy that predicted this called for full-agent treatment — but
+> only because corpus-level path entropy averaged across 114 distinct
+> tasks. Within-task entropy is moderate (2.30 bits), which is the
+> signal a taxonomy should actually use.
 
-### Implications
+### Hidden lesson
 
-1. **Single-signal taxonomy is wrong.** A second axis is needed. The
-   right framing is likely a 2D grid:
-
-   |                          | Low arg repetition    | High arg repetition  |
-   |--------------------------|-----------------------|----------------------|
-   | **Low path entropy**     | DETERMINISTIC pipeline | DETERMINISTIC + cache (rare) |
-   | **High path entropy**    | FULL_AGENT (true)     | **FULL_AGENT + cache** (the τ-retail case) |
-
-2. **Cache as a separable lever.** The PRD's original "PathCache" idea
-   is vindicated by tau-bench — it just doesn't help on the synthetic
-   workload because every synthetic trace carries a different
-   `date_offset`. On tau-bench replays it dominates.
-
-3. **The paper's strongest single number is τ-retail's 80.0% / 0.11%.**
-   Real customer-service traces, frontier-model baseline (Opus 4.7),
-   industry-standard quality cap (<2%). The reframed hook becomes:
-
-   > We show that **80% of inference cost** in a state-of-the-art
-   > customer-service benchmark (τ-bench retail) **can be saved at
-   > 0.11% quality regression** via path-level caching alone — and the
-   > taxonomy that predicted this *wrongly* called for full-agent
-   > treatment. The right execution-regime signal is two-dimensional:
-   > path entropy AND step-level argument repetition.
+This is also the cleanest example I have of *why measurement choices
+matter for the headline.* The v1 cache-hit number of 79.1% was a real
+artifact of using `task_text[:64]` as the cache key — identical across
+the 16 trials of a task. The fact that it dropped 16 pp with proper
+args (and that a parallel artifact inflated TRAIL by 70 pp in the
+opposite direction) means the v1 framing was unverified. The
+underlying claim survived, but only after honest re-measurement.
 
 ## Evidence: synthetic corporate workflow
 

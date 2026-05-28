@@ -12,6 +12,7 @@ from .entropy import (
     coverage_curve,
     extract_tool_sequence,
     extract_tool_sequence_from_messages,
+    extract_tool_calls_with_args_from_messages,
 )
 from .path_cache import PathCache
 from .entropy_estimator import NgramEntropyEstimator

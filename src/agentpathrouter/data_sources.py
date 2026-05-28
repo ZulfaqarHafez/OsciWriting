@@ -29,7 +29,11 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from .entropy import extract_tool_sequence, extract_tool_sequence_from_messages
+from .entropy import (
+    extract_tool_calls_with_args_from_messages,
+    extract_tool_sequence,
+    extract_tool_sequence_from_messages,
+)
 
 
 class DatasetUnavailable(RuntimeError):
@@ -72,33 +76,60 @@ def _walk_for_messages(row: Any) -> list[dict] | None:
 
 
 def _extract_tools(row: dict) -> list[str]:
-    """Try structured-message extraction first, then regex on a serialised dump."""
+    """Names only (back-compat). Use ``_extract_tools_with_args`` for new code."""
+    return [t for t, _ in _extract_tools_with_args(row)]
+
+
+def _extract_tools_with_args(row: dict) -> list[tuple[str, dict]]:
+    """Return ``[(tool, args), ...]`` for one row, preferring structured
+    extraction over regex.
+
+    Regex fallback only knows tool names (no args available in raw log
+    strings) — those entries get an empty args dict, which conservatively
+    means cache keys won't over-merge.
+    """
     msgs = _walk_for_messages(row)
     if msgs:
-        seq = extract_tool_sequence_from_messages(msgs)
+        seq = extract_tool_calls_with_args_from_messages(msgs)
         if seq:
             return seq
-    # Fall back: serialise and regex
     try:
         blob = json.dumps(row, default=str)
     except (TypeError, ValueError):
         blob = str(row)
-    return extract_tool_sequence(blob)
+    return [(t, {}) for t in extract_tool_sequence(blob)]
 
 
 def _normalise(rows: Iterable[dict], id_field: str = "id") -> list[dict]:
-    """Apply ``_extract_tools`` to every row, dropping ones with no tool calls."""
+    """Per-row normalisation. Output schema:
+
+        {
+            "id":        str,
+            "tools":     list[str],
+            "tool_args": list[dict],   # parallel to tools, per-call args
+            "args":      dict,         # legacy trace-level args (kept for back-compat)
+            "raw":       Any,
+        }
+    """
     out: list[dict] = []
     for i, r in enumerate(rows):
-        tools = _extract_tools(r)
-        if not tools:
+        pairs = _extract_tools_with_args(r)
+        if not pairs:
             continue
+        tools = [p[0] for p in pairs]
+        tool_args = [p[1] for p in pairs]
         rid = r.get(id_field) or r.get("trace_id") or f"row-{i:06d}"
-        # ``args`` for cache keying: use whatever input fields look stable.
-        args = {
-            "q": (r.get("question") or r.get("query") or r.get("task") or r.get("prompt") or "")[:64],
+        trace_args = {
+            "q": (r.get("question") or r.get("query") or r.get("task")
+                  or r.get("prompt") or "")[:64],
         }
-        out.append({"id": str(rid), "tools": tools, "args": args, "raw": r})
+        out.append({
+            "id": str(rid),
+            "tools": tools,
+            "tool_args": tool_args,
+            "args": trace_args,
+            "raw": r,
+        })
     return out
 
 
@@ -121,7 +152,8 @@ def load_yunjue(subset: str = "finsearchcomp", split: str = "train") -> list[dic
         except Exception:  # noqa: BLE001
             continue
         rows.append({"id": r.get("id"), "question": q, "log": log})
-    # Yunjue logs are flat strings → regex path
+    # Yunjue logs are flat strings → regex path. We don't get per-call args
+    # this way; emit empty arg dicts so the schema stays uniform.
     out = []
     for i, r in enumerate(rows):
         tools = extract_tool_sequence(r["log"])
@@ -130,6 +162,7 @@ def load_yunjue(subset: str = "finsearchcomp", split: str = "train") -> list[dic
         out.append({
             "id": str(r.get("id") or f"yunjue-{i:06d}"),
             "tools": tools,
+            "tool_args": [{} for _ in tools],
             "args": {"q": r["question"][:64]},
             "raw": r,
         })
@@ -286,11 +319,18 @@ def load_trail(dir_path: str | Path, subset: str = "all") -> list[dict]:
                 tools.extend(_trail_walk_tools(s))
             if not tools:
                 continue
+            trace_id = data.get("trace_id") or jf.stem
             out.append({
-                "id": data.get("trace_id") or jf.stem,
+                "id": trace_id,
                 "tools": tools,
+                # TRAIL spans don't expose per-call tool arguments (they
+                # live inside LiteLLMModel.__call__ as free-form text).
+                # Namespace cache keys by trace_id so cross-trace cache
+                # collisions stay impossible — otherwise empty-args keys
+                # collapse and the cache hit rate is over-counted.
+                "tool_args": [{"_trace": trace_id} for _ in tools],
                 "args": {"subset": sd.name, "task": jf.stem[:32]},
-                "raw": {"file": str(jf)},
+                "raw": {"file": str(jf), "trace_id": trace_id},
             })
     if not out:
         raise DatasetUnavailable(f"no usable TRAIL traces under {data_dir}")

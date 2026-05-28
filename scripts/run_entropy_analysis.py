@@ -54,7 +54,13 @@ from agentpathrouter.synthetic import generate_corpus, make_tool_registry  # noq
 def _synthetic_rows(n: int, seed: int) -> list[dict]:
     """Synthetic corpus shaped like the data_sources loaders' output."""
     return [
-        {"id": t.trace_id, "tools": t.tools, "args": t.inputs, "raw": t}
+        {
+            "id": t.trace_id,
+            "tools": t.tools,
+            "tool_args": [dict(t.inputs) for _ in t.tools],
+            "args": t.inputs,
+            "raw": t,
+        }
         for t in generate_corpus(n=n, seed=seed)
     ]
 
@@ -117,6 +123,56 @@ def phase1_entropy(sequences: list[tuple[str, ...]], outdir: Path) -> dict:
     return summary
 
 
+def within_task_entropy(rows: list[dict]) -> dict:
+    """Average path entropy *within* clusters of traces sharing a task_id.
+
+    Tau-bench runs 4 trials per task; corpus-level entropy mixes 114 task
+    distributions and hides whether each task is individually deterministic.
+    This computes the mean entropy across per-task clusters, so we can tell
+    a "mixture of low-entropy tasks" from "actually high-entropy per task".
+
+    Returns ``{}`` if no task_id is recoverable from the rows.
+    """
+    from collections import defaultdict
+    from agentpathrouter.entropy import path_entropy as _H
+
+    clusters: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+    for r in rows:
+        raw = r.get("raw") or {}
+        if not isinstance(raw, dict):
+            continue
+        # Try common task-id field names.
+        tid = raw.get("task_id") or raw.get("task") or raw.get("trace_id")
+        if not tid:
+            continue
+        clusters[str(tid)].append(tuple(r["tools"]))
+
+    if not clusters:
+        return {}
+
+    # Only meaningful when we have multi-trace clusters.
+    multi = {k: v for k, v in clusters.items() if len(v) >= 2}
+    if not multi:
+        return {"clusters_total": len(clusters), "clusters_with_multiple_trials": 0}
+
+    per_cluster_entropies = [_H(seqs) for seqs in multi.values()]
+    avg = sum(per_cluster_entropies) / len(per_cluster_entropies)
+    return {
+        "clusters_total": len(clusters),
+        "clusters_with_multiple_trials": len(multi),
+        "mean_trials_per_cluster": round(
+            sum(len(v) for v in multi.values()) / len(multi), 2
+        ),
+        "mean_within_task_entropy_bits": round(avg, 4),
+        "max_within_task_entropy_bits": round(max(per_cluster_entropies), 4),
+        "fraction_clusters_zero_entropy": round(
+            sum(1 for h in per_cluster_entropies if h == 0.0)
+            / len(per_cluster_entropies),
+            4,
+        ),
+    }
+
+
 ARMS = {
     # PRD §9 Phase 4 ablation: three configurations of the router.
     "baseline":               {"use_speculation": False, "use_small_model_routing": False, "no_cache": True},
@@ -162,10 +218,16 @@ def _run_arm(
     agg = RunMetrics()
     per_run = []
     t0 = time.perf_counter()
-    for seq, args in test_traces:
+    for entry in test_traces:
+        # Back-compat: tuples were (seq, args); now (seq, args, per_step_args).
+        if len(entry) == 3:
+            seq, args, per_step_args = entry
+        else:
+            seq, args = entry
+            per_step_args = None
         if any(t not in tools for t in seq):
             continue
-        _, m = router.run_trace(list(seq), args)
+        _, m = router.run_trace(list(seq), args, per_step_args=per_step_args)
         agg += m
         per_run.append(m)
     elapsed = time.perf_counter() - t0
@@ -234,8 +296,8 @@ def _make_universal_registry(train_seqs, test_traces) -> dict:
     seen = set()
     for s in train_seqs:
         seen.update(s)
-    for seq, _ in test_traces:
-        seen.update(seq)
+    for entry in test_traces:
+        seen.update(entry[0])  # first element is the tool sequence
 
     def _stub(name: str):
         def fn(ctx: dict) -> dict:
@@ -290,15 +352,18 @@ def main() -> None:
         print(f"[error] could not load --source {args.source}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # ---- normalise to (sequences, args_list) ----
+    # ---- normalise to (sequences, args_list, per_step_args_list) ----
     sequences: list[tuple[str, ...]] = []
     args_list: list[dict] = []
+    per_step_args_list: list[list[dict] | None] = []
     for r in rows:
         tools = tuple(r["tools"])
         if not tools:
             continue
         sequences.append(tools)
         args_list.append(r.get("args") or {})
+        psa = r.get("tool_args")
+        per_step_args_list.append(psa if isinstance(psa, list) and len(psa) == len(tools) else None)
 
     if not sequences:
         print("No tool sequences extracted; check the loader for this source.",
@@ -311,6 +376,16 @@ def main() -> None:
     print(f"[phase1] unique_paths={p1['unique_paths']}  entropy={p1['path_entropy_bits']} bits  "
           f"top10_coverage={p1['top10_coverage']*100:.1f}%")
 
+    # Within-task entropy (multi-trial corpora only)
+    wt = within_task_entropy(rows)
+    if wt.get("clusters_with_multiple_trials"):
+        print(f"[within-task] {wt['clusters_with_multiple_trials']} clusters "
+              f"({wt['mean_trials_per_cluster']:.1f} trials/cluster avg) — "
+              f"mean within-task entropy {wt['mean_within_task_entropy_bits']} bits, "
+              f"{wt['fraction_clusters_zero_entropy']*100:.1f}% are fully collapsed (H=0)")
+        p1["within_task"] = wt
+        (args.outdir / "phase1_entropy.json").write_text(json.dumps(p1, indent=2))
+
     # ---- regime classification (the headline contribution) ----
     regime = classify(sequences)
     print(f"[regime] {regime.regime.value.upper()}  "
@@ -322,9 +397,9 @@ def main() -> None:
     # ---- train/test split ----
     n_train = max(1, int(len(sequences) * args.train_frac))
     train = sequences[:n_train]
-    test = list(zip(sequences[n_train:], args_list[n_train:]))
+    test = list(zip(sequences[n_train:], args_list[n_train:], per_step_args_list[n_train:]))
     if not test:
-        test = list(zip(sequences, args_list))
+        test = list(zip(sequences, args_list, per_step_args_list))
 
     # ---- phase 4 (full §9 ablation) ----
     p4 = phase4_router_eval(

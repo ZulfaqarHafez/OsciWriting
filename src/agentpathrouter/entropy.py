@@ -48,6 +48,65 @@ def extract_tool_sequence(log: str) -> list[str]:
     return []
 
 
+def extract_tool_calls_with_args_from_messages(
+    messages: list[dict],
+) -> list[tuple[str, dict]]:
+    """Like ``extract_tool_sequence_from_messages`` but also returns args.
+
+    Each entry is ``(tool_name, arguments_dict)`` in invocation order. Used
+    by the state-hash cache so per-call args (e.g. ``{"order_id": "X"}``)
+    properly distinguish cache keys, instead of relying on a coarse
+    trace-level arg proxy.
+
+    Args may be a dict (already parsed) or a JSON string (some providers
+    serialise the call); both are normalised to a dict.
+    """
+    import json as _json
+
+    def _parse_args(raw) -> dict:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {"_raw": raw}
+            except _json.JSONDecodeError:
+                return {"_raw": raw}
+        return {}
+
+    from_assistant: list[tuple[str, dict]] = []
+    from_tool_role: list[tuple[str, dict]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = fn.get("name") or tc.get("name")
+            args_raw = fn.get("arguments") if "arguments" in fn else tc.get("arguments")
+            if name:
+                from_assistant.append((name, _parse_args(args_raw)))
+        content = msg.get("content")
+        if isinstance(content, str) and "<tool_call>" in content:
+            # Hermes-style. Pull the whole JSON block to keep the args.
+            for m in re.finditer(
+                r'<tool_call>\s*(\{.*?\})\s*</tool_call>', content, flags=re.DOTALL
+            ):
+                try:
+                    obj = _json.loads(m.group(1))
+                except _json.JSONDecodeError:
+                    continue
+                name = obj.get("name")
+                if name:
+                    from_assistant.append((name, _parse_args(obj.get("arguments") or {})))
+        if msg.get("role") == "tool":
+            name = msg.get("name") or msg.get("tool_name")
+            if name:
+                from_tool_role.append((name, {}))  # tool-role turns rarely carry args
+    return from_assistant or from_tool_role
+
+
 def extract_tool_sequence_from_messages(messages: list[dict]) -> list[str]:
     """Walk a structured chat-completions ``messages`` list and pull tool names.
 

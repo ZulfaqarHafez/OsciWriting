@@ -10,7 +10,10 @@ from agentpathrouter.data_sources import (
     load,
     load_tau_bench,
 )
-from agentpathrouter.entropy import extract_tool_sequence_from_messages
+from agentpathrouter.entropy import (
+    extract_tool_calls_with_args_from_messages,
+    extract_tool_sequence_from_messages,
+)
 
 
 # ---- structured-message extractor ----------------------------------------
@@ -47,6 +50,41 @@ def test_extract_messages_role_tool_only():
         {"role": "tool", "name": "beta", "content": "y"},
     ]
     assert extract_tool_sequence_from_messages(msgs) == ["alpha", "beta"]
+
+
+def test_extract_with_args_tau_bench_flat_schema():
+    """tau-bench uses a flat tc[name]/tc[arguments] schema (no nested
+    function key). The extractor must recover both name and args."""
+    msgs = [{"role": "assistant", "tool_calls": [
+        {"id": "1", "name": "find_user_id_by_email",
+         "arguments": {"email": "mia@example.com"}},
+        {"id": "2", "name": "get_order_details",
+         "arguments": {"order_id": "W123"}},
+    ]}]
+    pairs = extract_tool_calls_with_args_from_messages(msgs)
+    assert pairs == [
+        ("find_user_id_by_email", {"email": "mia@example.com"}),
+        ("get_order_details", {"order_id": "W123"}),
+    ]
+
+
+def test_extract_with_args_openai_nested_schema():
+    msgs = [{"role": "assistant", "tool_calls": [
+        {"function": {"name": "search", "arguments": {"q": "hello"}}},
+    ]}]
+    assert extract_tool_calls_with_args_from_messages(msgs) == [
+        ("search", {"q": "hello"}),
+    ]
+
+
+def test_extract_with_args_handles_stringified_arguments():
+    """Some providers serialise arguments as a JSON string instead of an obj."""
+    msgs = [{"role": "assistant", "tool_calls": [
+        {"name": "fetch", "arguments": '{"id": 42}'},
+    ]}]
+    assert extract_tool_calls_with_args_from_messages(msgs) == [
+        ("fetch", {"id": 42}),
+    ]
 
 
 def test_extract_messages_empty_on_no_tools():
