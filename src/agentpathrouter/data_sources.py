@@ -239,14 +239,20 @@ def load_tau_bench(dir_path: str | Path) -> list[dict]:
             data = json.loads(jf.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        # Unwrap results envelope first.
+        # Unwrap results envelope first; remember the file's info block so
+        # the per-sim row can record which LLM was used (needed for
+        # (task, model) clustering in the correlation analysis).
+        parent_info = None
         if isinstance(data, dict) and isinstance(data.get("simulations"), list):
             sims = data["simulations"]
+            parent_info = data.get("info")
         else:
             sims = data if isinstance(data, list) else [data]
         for i, sim in enumerate(sims):
             if isinstance(sim, dict):
                 sim.setdefault("id", f"{jf.stem}#{i}")
+                if parent_info is not None:
+                    sim.setdefault("info", parent_info)
                 rows.append(sim)
     if not rows:
         raise DatasetUnavailable(f"no JSON traces found under {p}")

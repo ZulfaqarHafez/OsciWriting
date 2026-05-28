@@ -108,83 +108,94 @@ def main():
         rows = load("trail", dir_path=args.trail_dir, subset="all")
 
     by_task: dict[str, list[dict]] = defaultdict(list)
+    by_task_model: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for r in rows:
-        tid = (r.get("raw") or {}).get("task_id") if isinstance(r.get("raw"), dict) else None
-        tid = tid or r.get("task_id") or r["id"]
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        tid = raw.get("task_id") or r.get("task_id") or r["id"]
         by_task[str(tid)].append(r)
+        # (task, model) grouping — separates intra-trial variance from
+        # inter-model variance on tau-bench (4 model variants per task).
+        model = ((raw.get("info") or {}).get("agent_info") or {}).get("llm") or "unknown"
+        by_task_model[(str(tid), model)].append(r)
 
-    points = []  # (cluster_id, n_trials, within_entropy, cache_hit_rate, n_steps)
-    for tid, traces in by_task.items():
-        if len(traces) < args.min_trials_per_cluster:
-            continue
-        seqs = [tuple(t["tools"]) for t in traces]
-        h = path_entropy(seqs)
-        hr, n_steps = cluster_cache_hit_rate(traces)
-        points.append({
-            "task_id": tid, "n_trials": len(traces),
-            "within_entropy_bits": round(h, 4),
-            "cache_hit_rate": round(hr, 4),
-            "n_steps": n_steps,
-        })
+    def correlate(groups, label):
+        pts = []
+        for key, traces in groups.items():
+            if len(traces) < args.min_trials_per_cluster:
+                continue
+            seqs = [tuple(t["tools"]) for t in traces]
+            h = path_entropy(seqs)
+            hr, n_steps = cluster_cache_hit_rate(traces)
+            pts.append({"key": str(key), "n_trials": len(traces),
+                        "within_entropy_bits": round(h, 4),
+                        "cache_hit_rate": round(hr, 4), "n_steps": n_steps})
+        if not pts:
+            return None
+        xs = [p["within_entropy_bits"] for p in pts]
+        ys = [p["cache_hit_rate"] for p in pts]
+        r = pearson_r(xs, ys)
+        rho = spearman_rho(xs, ys)
+        sorted_pairs = sorted(zip(xs, ys))
+        q = len(sorted_pairs) // 4
+        quartiles = []
+        for i in range(4):
+            lo = i * q
+            hi = len(sorted_pairs) if i == 3 else (i + 1) * q
+            chunk = sorted_pairs[lo:hi]
+            if not chunk:
+                continue
+            quartiles.append({
+                "quartile": i + 1,
+                "entropy_range": (round(chunk[0][0], 3), round(chunk[-1][0], 3)),
+                "n_clusters": len(chunk),
+                "mean_cache_hit_rate": round(statistics.mean(c[1] for c in chunk), 4),
+            })
+        return {
+            "label": label,
+            "n_clusters_total": len(pts),
+            "mean_entropy": round(statistics.mean(xs), 4),
+            "mean_cache_hit_rate": round(statistics.mean(ys), 4),
+            "pearson_r": round(r, 4),
+            "spearman_rho": round(rho, 4),
+            "claim_verdict": (
+                "STRONG support" if rho < -0.5 else
+                "MODERATE support" if rho < -0.3 else
+                "WEAK support" if rho < -0.1 else
+                "NO support — claim falsified"
+            ),
+            "entropy_quartiles": quartiles,
+            "points": pts,
+        }
 
-    if not points:
+    task_only = correlate(by_task, "by task_id (mixes all model variants)")
+    task_model = correlate(by_task_model, "by (task_id, model)")
+
+    if task_only is None:
         print("No multi-trial clusters; cannot measure correlation.")
         return
 
-    xs = [p["within_entropy_bits"] for p in points]
-    ys = [p["cache_hit_rate"] for p in points]
-    r = pearson_r(xs, ys)
-    rho = spearman_rho(xs, ys)
-
-    # Quartile breakdown — averages of cache hit rate by entropy quartile
-    sorted_pairs = sorted(zip(xs, ys))
-    q = len(sorted_pairs) // 4
-    quartiles = []
-    for i in range(4):
-        lo = i * q
-        hi = len(sorted_pairs) if i == 3 else (i + 1) * q
-        chunk = sorted_pairs[lo:hi]
-        if not chunk:
-            continue
-        quartiles.append({
-            "quartile": i + 1,
-            "entropy_range": (round(chunk[0][0], 3), round(chunk[-1][0], 3)),
-            "n_clusters": len(chunk),
-            "mean_cache_hit_rate": round(statistics.mean(c[1] for c in chunk), 4),
-        })
-
     result = {
         "source": args.source,
-        "n_clusters_total": len(points),
-        "min_trials_per_cluster": args.min_trials_per_cluster,
-        "mean_entropy": round(statistics.mean(xs), 4),
-        "mean_cache_hit_rate": round(statistics.mean(ys), 4),
-        "pearson_r": round(r, 4),
-        "spearman_rho": round(rho, 4),
-        "expected_sign": "negative (higher entropy → lower cacheability)",
-        "claim_verdict": (
-            "STRONG support" if rho < -0.5 else
-            "MODERATE support" if rho < -0.3 else
-            "WEAK support" if rho < -0.1 else
-            "NO support — claim falsified"
-        ),
-        "entropy_quartiles": quartiles,
+        "by_task": task_only,
+        "by_task_model": task_model,
     }
-    args.out.write_text(json.dumps({**result, "points": points}, indent=2))
+    args.out.write_text(json.dumps(result, indent=2))
 
-    print(f"clusters with ≥{args.min_trials_per_cluster} trials: {len(points)}")
-    print(f"mean within-task entropy: {result['mean_entropy']} bits")
-    print(f"mean cache hit rate:      {result['mean_cache_hit_rate']*100:.1f}%")
-    print(f"Pearson r:                {r:.4f}")
-    print(f"Spearman ρ:               {rho:.4f}")
-    print(f"verdict:                  {result['claim_verdict']}")
-    print()
-    print("By entropy quartile (low to high):")
-    print(f"  {'Q':>2}  {'entropy range':>16}  {'n':>4}  {'mean cache hit':>14}")
-    for q in quartiles:
-        print(f"  Q{q['quartile']}  "
-              f"[{q['entropy_range'][0]:>5.2f}, {q['entropy_range'][1]:>5.2f}]  "
-              f"{q['n_clusters']:>4}  {q['mean_cache_hit_rate']*100:>13.1f}%")
+    for label_name, r in [("by task_id", task_only), ("by (task_id, model)", task_model)]:
+        if r is None:
+            continue
+        print(f"\n=== Grouping: {label_name} ===")
+        print(f"clusters: {r['n_clusters_total']}")
+        print(f"mean within-cluster entropy: {r['mean_entropy']} bits")
+        print(f"mean cache hit rate:         {r['mean_cache_hit_rate']*100:.1f}%")
+        print(f"Pearson r:                   {r['pearson_r']:.4f}")
+        print(f"Spearman ρ:                  {r['spearman_rho']:.4f}")
+        print(f"verdict:                     {r['claim_verdict']}")
+        print(f"  {'Q':>2}  {'entropy range':>16}  {'n':>4}  {'mean cache hit':>14}")
+        for q in r["entropy_quartiles"]:
+            print(f"  Q{q['quartile']}  "
+                  f"[{q['entropy_range'][0]:>5.2f}, {q['entropy_range'][1]:>5.2f}]  "
+                  f"{q['n_clusters']:>4}  {q['mean_cache_hit_rate']*100:>13.1f}%")
     print(f"\nwrote {args.out}")
 
 

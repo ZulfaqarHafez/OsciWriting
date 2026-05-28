@@ -262,6 +262,83 @@ small at every tool cost level (cache+spec ≈ cache_only on this
 corpus). Speculation continues to be a latency lever; this sweep
 confirms it isn't actively *negative* in the cost dimension.
 
+## P2 / P3 verifications
+
+### P3.1 — PathCache determinism audit (the silent quality bug)
+
+PathCache hits return a previously-observed output for the state hash
+``(tool, history, args)`` — sound only if that triple deterministically
+yields the same output. On tau-bench we can check directly: pair each
+``tool_call`` with its matching ``role==tool`` response (by id), group
+by state hash, count hashes with multiple distinct outputs.
+
+| Domain            | Cache hits possible | Non-det share | **Stale hit rate** |
+|-------------------|--------------------:|--------------:|-------------------:|
+| retail            |              10,788 |         0.23% |          **0.03%** |
+| airline           |               3,535 |         0.33% |          **0.11%** |
+| telecom           |              25,158 |        24.13% |          **55.83%** |
+| telecom-workflow  |              18,317 |        23.55% |          **55.98%** |
+| **full corpus**   |              58,841 |        16.20% |          **44.05%** |
+
+Stale hit rate = fraction of cache hits that would return outputs
+**different** from the actual tool output the agent would have received.
+
+The retail headline (64.0% saved) stands cleanly — **stale hit rate is
+0.03%**, cache is safe. The "44.0% saved" figure I previously cited for
+the full tau-bench corpus is **misleading**: telecom contributes most
+of the cache hits and ~56% of those would return stale outputs from
+state-mutating tools like ``toggle_airplane_mode`` and
+``check_network_status``.
+
+The taxonomy needs a **per-tool determinism filter** alongside the
+within-task-entropy signal: stateful / observation tools should be
+denylisted from PathCache. This is independent of the workload regime —
+no amount of low entropy makes a non-idempotent tool safe to cache.
+
+Script: ``scripts/audit_cache_determinism.py``.
+
+### P3.2 — Re-clustering the entropy↔cache correlation by (task, model)
+
+The P1.2 STRONG support (r = -0.90, ρ = -0.93) used (task_id) clusters
+that mixed all 4 LLM variants of each task. That confounds intra-trial
+variance with inter-model variance. The cleaner grouping is
+(task_id, model). Result:
+
+| Grouping              | Clusters | Mean H | Pearson r | Spearman ρ | Verdict   |
+|-----------------------|---------:|-------:|----------:|-----------:|-----------|
+| by task_id            |      228 |  4.31 b|   -0.9021 |   -0.9340  | STRONG    |
+| **by (task_id, model)** |  **912** | **2.44 b** | **-0.3572** | **-0.4033** | **MODERATE** |
+
+The earlier STRONG support is **downgraded to MODERATE**. Within-task
+entropy still predicts cacheability, but explains only ~40% of variance,
+not 90%. The remaining variance comes from per-tool argument
+distributions and model-specific behaviour.
+
+This is the third honest downgrade in this verification pass (80%→66%→64%
+on cost; STRONG→MODERATE on correlation). Pattern: each verification
+shrinks an earlier claim by roughly half.
+
+### P2.1 — n-gram order sweep
+
+Default ``NgramEntropyEstimator`` is n=3. Sweep on tau-retail:
+
+| n | cache% | spec hit% | spec fires | spec precision | route% | step qreg% |
+|--:|-------:|----------:|-----------:|---------------:|-------:|-----------:|
+| 1 |  63.1% |    0.0%   |          0 |      0.0%      |   0.0% |     0.00%  |
+| 2 |  63.1% |    5.8%   |        442 |    **70.8%**   |   0.0% |     0.00%  |
+| 3 |  63.1% |    6.5%   |        519 |     67.4%      |   0.9% |     0.09%  |
+| 4 |  63.1% |    7.9%   |        684 |     62.3%      |   1.6% |     0.20%  |
+| 5 |  63.1% |    7.2%   |        617 |     62.9%      |   2.2% |     0.31%  |
+| 6 |  63.1% |    7.9%   |        679 |     62.6%      |   2.4% |     0.43%  |
+
+n=2 actually maximises precision; n=3 is essentially as good. n≥4
+trades precision for more fires and creeping step-level regression.
+**The default n=3 is defensible** but n=2 is just as good and slightly
+cheaper to fit. No reason to use n≥4.
+
+Cache hit rate is independent of n (PathCache doesn't use the
+estimator), so the 63.1% headline doesn't depend on this choice.
+
 ## Hidden lesson
 
 This is also the cleanest example I have of *why measurement choices
