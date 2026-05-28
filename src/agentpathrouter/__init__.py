@@ -7,7 +7,12 @@ Implements the system described in the Agentic Execution Entropy PRD:
     - Middleware:          glues the three together around a tool-calling agent loop
 """
 
-from .entropy import path_entropy, coverage_curve, extract_tool_sequence
+from .entropy import (
+    path_entropy,
+    coverage_curve,
+    extract_tool_sequence,
+    extract_tool_sequence_from_messages,
+)
 from .path_cache import PathCache
 from .entropy_estimator import NgramEntropyEstimator
 from .speculative import SpeculativePrefetcher
@@ -17,6 +22,7 @@ __all__ = [
     "path_entropy",
     "coverage_curve",
     "extract_tool_sequence",
+    "extract_tool_sequence_from_messages",
     "PathCache",
     "NgramEntropyEstimator",
     "SpeculativePrefetcher",

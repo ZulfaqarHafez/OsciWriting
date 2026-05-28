@@ -30,9 +30,36 @@ results/agentic_execution_entropy/  machine-readable JSON results
 | 3     | System build (cache + estimator + spec)  | Done (in-memory; ready for Redis/sqlite swap) |
 | 4     | Evaluation + writing                     | Step-level rates reported; token/USD cost & small-model routing arm not yet wired |
 
+## Data sources wired into `scripts/run_entropy_analysis.py`
+
+Pick with `--source <name>`. All HF sources fall through to a clean
+`DatasetUnavailable` error when network is blocked.
+
+| `--source` | Repo / location | Why |
+|---|---|---|
+| `yunjue` | `YunjueTech/Yunjue-Agent-Traces` (finsearchcomp) | PRD §6.1 primary |
+| `nemotron_agentic` | `nvidia/Nemotron-Agentic-v1` | Large synthetic multi-turn trajectories |
+| `hermes_reasoning` | `lambda/hermes-agent-reasoning-traces` | Multi-turn tool calls + reasoning blocks |
+| `hermes_filtered` | `DJLougen/hermes-agent-traces-filtered` | Quality-pruned Hermes subset |
+| `tau_bench` | local dir (`--tau-bench-dir`) | τ-bench (sierra-research/tau2-bench) — generate locally, then point loader at `data/simulations/` |
+| `synthetic` | in-process | PRD §6.3 stand-in (always works) |
+| `auto` | yunjue → synthetic | Default; tries yunjue, silent fallback |
+
+### Generating τ-bench traces locally
+
+```bash
+git clone https://github.com/sierra-research/tau2-bench
+cd tau2-bench && uv sync
+uv run python -m tau2 run-and-eval --domain retail \
+    --agent-llm gpt-4o-mini --num-trials 200
+# back in this repo:
+python3 scripts/run_entropy_analysis.py \
+    --source tau_bench --tau-bench-dir /path/to/tau2-bench/data/simulations
+```
+
 ## Not yet done (explicit follow-ups)
 
-- Run Phase 1 on the real Yunjue `finsearchcomp` split (needs HF access).
+- Run Phase 1 on real Yunjue / Nemotron / Hermes — drivers ready, blocked on HF egress in this container.
 - LangGraph + AgentTrace SDK span instrumentation (PRD §6.3).
 - Small-model routing arm of the ablation (PRD §5.2 third component).
 - Wire token/USD cost numbers — either through `src/redundancy/cost_model.py`

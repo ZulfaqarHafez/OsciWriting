@@ -25,8 +25,11 @@ from typing import Iterable, Sequence
 # Common shapes seen in agent traces. Ordered most-specific → most-generic.
 _TOOL_PATTERNS = [
     re.compile(r"tool_call:\s*([A-Za-z_][\w\-]*)"),
+    re.compile(r'"tool_name"\s*:\s*"([A-Za-z_][\w\-]*)"'),
     re.compile(r'"tool"\s*:\s*"([A-Za-z_][\w\-]*)"'),
     re.compile(r'"function"\s*:\s*\{\s*"name"\s*:\s*"([A-Za-z_][\w\-]*)"'),
+    # Hermes-style: <tool_call>{"name": "X", "arguments": ...}</tool_call>
+    re.compile(r'<tool_call>\s*\{\s*"name"\s*:\s*"([A-Za-z_][\w\-]*)"'),
     re.compile(r"<tool>\s*([A-Za-z_][\w\-]*)\s*</tool>"),
     re.compile(r"Action:\s*([A-Za-z_][\w\-]*)"),
 ]
@@ -43,6 +46,46 @@ def extract_tool_sequence(log: str) -> list[str]:
         if matches:
             return matches
     return []
+
+
+def extract_tool_sequence_from_messages(messages: list[dict]) -> list[str]:
+    """Walk a structured chat-completions ``messages`` list and pull tool names.
+
+    Handles three common shapes:
+        - OpenAI-style: ``msg["tool_calls"] = [{"function": {"name": ...}}, ...]``
+        - Hermes / Nemotron-style: assistant ``content`` contains
+          ``<tool_call>{"name": "X", "arguments": {...}}</tool_call>`` blocks
+        - Generic ``msg["name"]`` on role=="tool" turns (in invocation order)
+
+    Preference order: if the corpus emits assistant-side calls (tool_calls
+    arrays or Hermes tags), use those. The ``role=="tool"`` response turns
+    are used only when there are no assistant-side calls anywhere — they're
+    redundant otherwise and would double-count.
+
+    Returns ``[]`` if no tool calls can be found structurally.
+    """
+    from_assistant: list[str] = []
+    from_tool_role: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                name = fn.get("name") or tc.get("name")
+                if name:
+                    from_assistant.append(name)
+        content = msg.get("content")
+        if isinstance(content, str) and "<tool_call>" in content:
+            for m in re.finditer(
+                r'<tool_call>\s*\{\s*"name"\s*:\s*"([A-Za-z_][\w\-]*)"', content
+            ):
+                from_assistant.append(m.group(1))
+        if msg.get("role") == "tool":
+            name = msg.get("name") or msg.get("tool_name")
+            if name:
+                from_tool_role.append(name)
+    return from_assistant or from_tool_role
 
 
 # ---------------------------------------------------------------------------

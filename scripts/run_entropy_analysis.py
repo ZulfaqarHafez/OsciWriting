@@ -1,7 +1,7 @@
 """Phase 1 + Phase 4 driver: entropy analysis and AgentPathRouter evaluation.
 
-Loads either the Yunjue finsearchcomp split (if HuggingFace is reachable) or
-a synthetic corporate-workflow corpus, then:
+Loads a named trace corpus (Yunjue, Nemotron-Agentic, two Hermes sets,
+τ-bench, or a synthetic fallback), then:
 
     1. Computes Shannon entropy + top-N coverage on the path distribution
        (PRD §5.1 empirical claim).
@@ -11,14 +11,21 @@ a synthetic corporate-workflow corpus, then:
        (PRD §5.3 primary metrics — proxies for token/cost reduction).
 
 Writes machine-readable results to ``results/agentic_execution_entropy/``.
+
+Sources:
+    auto             try yunjue, fall back to synthetic
+    yunjue           HF: YunjueTech/Yunjue-Agent-Traces (finsearchcomp split)
+    nemotron_agentic HF: nvidia/Nemotron-Agentic-v1
+    hermes_reasoning HF: lambda/hermes-agent-reasoning-traces
+    hermes_filtered  HF: DJLougen/hermes-agent-traces-filtered
+    tau_bench        local dir of tau2-bench simulation JSON files (--tau-bench-dir)
+    synthetic        in-process synthetic financial-report corpus (PRD §6.3 stand-in)
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -30,8 +37,8 @@ from agentpathrouter import (  # noqa: E402
     AgentPathRouter,
     NgramEntropyEstimator,
     coverage_curve,
-    extract_tool_sequence,
 )
+from agentpathrouter.data_sources import DatasetUnavailable, SOURCES, load  # noqa: E402
 from agentpathrouter.entropy import coverage_at_k  # noqa: E402
 from agentpathrouter.synthetic import generate_corpus, make_tool_registry  # noqa: E402
 
@@ -41,29 +48,38 @@ from agentpathrouter.synthetic import generate_corpus, make_tool_registry  # noq
 # ---------------------------------------------------------------------------
 
 
-def load_yunjue(subset: str = "finsearchcomp", split: str = "train") -> list[dict]:
-    """Load + base64-decode Yunjue traces. Returns ``[]`` if HF unreachable."""
-    try:
-        from datasets import load_dataset
-    except ImportError:
-        print("[yunjue] datasets package not installed", file=sys.stderr)
-        return []
+def _synthetic_rows(n: int, seed: int) -> list[dict]:
+    """Synthetic corpus shaped like the data_sources loaders' output."""
+    return [
+        {"id": t.trace_id, "tools": t.tools, "args": t.inputs, "raw": t}
+        for t in generate_corpus(n=n, seed=seed)
+    ]
 
-    try:
-        ds = load_dataset("YunjueTech/Yunjue-Agent-Traces", subset, split=split)
-    except Exception as e:  # noqa: BLE001
-        print(f"[yunjue] load failed ({e!r}) — falling back to synthetic", file=sys.stderr)
-        return []
 
-    out = []
-    for row in ds:
+def load_corpus(source: str, args: argparse.Namespace) -> tuple[str, list[dict]]:
+    """Return ``(source_label_used, rows)``. Falls back to synthetic if requested."""
+    if source == "synthetic":
+        return "synthetic", _synthetic_rows(args.n_synthetic, args.seed)
+
+    if source == "tau_bench":
+        if not args.tau_bench_dir:
+            raise SystemExit("--source tau_bench requires --tau-bench-dir <path>")
+        rows = load("tau_bench", dir_path=args.tau_bench_dir)
+        return f"tau_bench:{args.tau_bench_dir}", rows
+
+    if source == "auto":
+        # PRD primary source first; fall back silently to synthetic.
         try:
-            q = base64.b64decode(row["question"]).decode("utf-8", errors="replace")
-            log = base64.b64decode(row["log"]).decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
-            continue
-        out.append({"id": row.get("id"), "question": q, "log": log})
-    return out
+            rows = load("yunjue")
+            return "yunjue:finsearchcomp", rows
+        except DatasetUnavailable as e:
+            print(f"[auto] yunjue unavailable ({e}); falling back to synthetic",
+                  file=sys.stderr)
+            return "synthetic", _synthetic_rows(args.n_synthetic, args.seed)
+
+    # Named HF source
+    rows = load(source)
+    return source, rows
 
 
 # ---------------------------------------------------------------------------
@@ -97,13 +113,12 @@ def phase4_router_eval(
     test_traces: list[tuple[tuple[str, ...], dict]],
     outdir: Path,
     threshold: float,
+    tools: dict | None = None,
 ) -> dict:
-    """Train n-gram, run router on test set, return aggregate metrics.
-
-    ``test_traces`` is a list of ``(tool_sequence, shared_args)`` pairs.
-    """
+    """Train n-gram, run router on test set, return aggregate metrics."""
     est = NgramEntropyEstimator(n=3).fit(train_seqs)
-    tools = make_tool_registry()
+    if tools is None:
+        tools = _make_universal_registry(train_seqs, test_traces)
     router = AgentPathRouter(
         tools=tools, estimator=est, confidence_threshold=threshold
     )
@@ -111,6 +126,10 @@ def phase4_router_eval(
     t0 = time.perf_counter()
     agg = {"steps": 0, "cache_hits": 0, "spec_hits": 0, "full_calls": 0}
     for seq, args in test_traces:
+        # If the test sequence uses tools the registry doesn't know about
+        # (real corpora often have a long-tail vocabulary), skip cleanly.
+        if any(t not in tools for t in seq):
+            continue
         _, m = router.run_trace(list(seq), args)
         agg["steps"] += m.steps
         agg["cache_hits"] += m.cache_hits
@@ -137,6 +156,33 @@ def phase4_router_eval(
     return summary
 
 
+def _make_universal_registry(train_seqs, test_traces) -> dict:
+    """Build a tool registry covering every tool name observed in the corpus.
+
+    For real corpora (Nemotron / Hermes / τ-bench) we don't have callable
+    implementations of every tool, so stub each one as a deterministic
+    function of its inputs — that's enough to measure cache/spec rates.
+    """
+    from agentpathrouter.synthetic import make_tool_registry as _base
+    reg = _base()
+    seen = set()
+    for s in train_seqs:
+        seen.update(s)
+    for seq, _ in test_traces:
+        seen.update(seq)
+
+    def _stub(name: str):
+        def fn(ctx: dict) -> dict:
+            seed = hash((name, json.dumps(ctx, sort_keys=True, default=str))) & 0xFFFF_FFFF
+            return {"tool": name, "value": seed}
+        fn.__name__ = name
+        return fn
+
+    for name in seen:
+        reg.setdefault(name, _stub(name))
+    return reg
+
+
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
@@ -146,10 +192,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Run AEE entropy + router eval.")
     ap.add_argument(
         "--source",
-        choices=["auto", "yunjue", "synthetic"],
+        choices=["auto", "synthetic", *sorted(SOURCES)],
         default="auto",
-        help="auto = try yunjue, fall back to synthetic",
     )
+    ap.add_argument("--tau-bench-dir", type=str, default=None,
+                    help="Directory of tau2-bench simulation JSON files (for --source tau_bench).")
     ap.add_argument("--n-synthetic", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--train-frac", type=float, default=0.6)
@@ -163,41 +210,24 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
 
     # ---- load data ----
-    rows: list[dict] = []
-    source_used = "synthetic"
-    if args.source in ("auto", "yunjue"):
-        rows = load_yunjue()
-        if rows:
-            source_used = "yunjue:finsearchcomp"
+    try:
+        source_used, rows = load_corpus(args.source, args)
+    except DatasetUnavailable as e:
+        print(f"[error] could not load --source {args.source}: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    if not rows:
-        if args.source == "yunjue":
-            print("Yunjue requested but unavailable.", file=sys.stderr)
-            sys.exit(1)
-        synth = generate_corpus(n=args.n_synthetic, seed=args.seed)
-        rows = [
-            {
-                "id": t.trace_id,
-                "question": json.dumps(t.inputs),
-                "log": t.to_log(),
-                "_args": t.inputs,
-            }
-            for t in synth
-        ]
-
-    # ---- extract tool sequences ----
+    # ---- normalise to (sequences, args_list) ----
     sequences: list[tuple[str, ...]] = []
-    test_traces: list[tuple[tuple[str, ...], dict]] = []
     args_list: list[dict] = []
     for r in rows:
-        seq = tuple(extract_tool_sequence(r["log"]))
-        if not seq:
+        tools = tuple(r["tools"])
+        if not tools:
             continue
-        sequences.append(seq)
-        args_list.append(r.get("_args", {"q": r.get("question", "")[:32]}))
+        sequences.append(tools)
+        args_list.append(r.get("args") or {})
 
     if not sequences:
-        print("No tool sequences extracted; check regex in entropy.extract_tool_sequence",
+        print("No tool sequences extracted; check the loader for this source.",
               file=sys.stderr)
         sys.exit(2)
 
@@ -212,7 +242,6 @@ def main() -> None:
     train = sequences[:n_train]
     test = list(zip(sequences[n_train:], args_list[n_train:]))
     if not test:
-        # very small corpus — fall back to in-sample eval (synthetic only)
         test = list(zip(sequences, args_list))
 
     # ---- phase 4 ----
@@ -224,8 +253,10 @@ def main() -> None:
 
     # ---- combined ----
     combined = {"source": source_used, "phase1": p1, "phase4": p4}
+    out_name = f"summary_{source_used.replace(':', '_').replace('/', '_')}.json"
+    (args.outdir / out_name).write_text(json.dumps(combined, indent=2))
     (args.outdir / "summary.json").write_text(json.dumps(combined, indent=2))
-    print(f"[ok] wrote results to {args.outdir}")
+    print(f"[ok] wrote results to {args.outdir / out_name}")
 
 
 if __name__ == "__main__":
