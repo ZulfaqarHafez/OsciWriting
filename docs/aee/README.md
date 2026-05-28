@@ -2,22 +2,35 @@
 
 Implementation of the PRD
 *"Exploiting Repetitive Corporate Agent Workflows for Inference Cost Reduction"*
-(uploaded `376822c6-AgenticExecutionEntropy_PRD.docx`).
+(uploaded `376822c6-AgenticExecutionEntropy_PRD.docx`), **reframed** around
+a workflow-regime taxonomy — see `docs/aee/findings.md`.
+
+> **Headline claim.** Path execution entropy is a measurable signal that
+> classifies an agent workload into one of three regimes
+> (`DETERMINISTIC` / `HYBRID` / `FULL_AGENT`). When the regime is
+> `DETERMINISTIC`, the LLM is being used to make decisions that are
+> already determined by the input — the right intervention is to
+> replace the agent with a deterministic pipeline, not to cache it.
+> `AgentPathRouter` is the recommended architecture for the `HYBRID`
+> middle case.
 
 ## Layout
 
 ```
 src/agentpathrouter/
+    taxonomy.py                  REGIME CLASSIFIER — the headline contribution
     entropy.py            §5.1   path entropy, top-N coverage, tool-seq extraction
+    data_sources.py              loaders: yunjue / nemotron / hermes / tau-bench
     synthetic.py          §6.3   synthetic "daily financial report" trace generator
     path_cache.py         §5.2.1 PathCache (state-hash → cached output)
     entropy_estimator.py  §5.2.2 n-gram next-tool predictor
     speculative.py        §5.2.3 SpeculativePrefetcher (parallel pre-fire)
-    middleware.py                AgentPathRouter — orchestrates the three above
+    middleware.py                AgentPathRouter — cache + spec + small-model routing
+    cost.py                      CostModel with May-2026 Anthropic pricing
 
-scripts/run_entropy_analysis.py  driver: Yunjue OR synthetic → entropy + router eval
-tests/test_agentpathrouter_*.py  unit tests (11, all passing)
-docs/aee/findings.md             Phase 1 + Phase 4 results on synthetic corpus
+scripts/run_entropy_analysis.py  driver: load → entropy → regime → §9 ablation
+tests/test_agentpathrouter_*.py  unit tests (44, all passing)
+docs/aee/findings.md             Reframed findings + Phase 4 ablation numbers
 results/agentic_execution_entropy/  machine-readable JSON results
 ```
 
@@ -25,10 +38,11 @@ results/agentic_execution_entropy/  machine-readable JSON results
 
 | Phase | Description                              | Status                                     |
 |-------|------------------------------------------|--------------------------------------------|
-| 1     | Data + entropy analysis                  | Done on synthetic; Yunjue path wired, blocked by HF egress |
+| 1     | Data + entropy analysis                  | Done on synthetic; Yunjue/Nemotron/Hermes wired, blocked by HF egress |
+| 1b    | **Regime taxonomy** (new headline)       | Done — `agentpathrouter.taxonomy.classify`; thresholds preliminary, need cross-corpus calibration |
 | 2     | Synthetic corpus                         | Done (pure-stdlib generator, no LangGraph dep) |
-| 3     | System build (cache + estimator + spec)  | Done (in-memory; ready for Redis/sqlite swap) |
-| 4     | Evaluation + writing                     | Step-level rates reported; token/USD cost & small-model routing arm not yet wired |
+| 3     | System build (cache + estimator + spec + small-model routing) | Done; cost model wired with May 2026 Anthropic pricing |
+| 4     | Evaluation + writing                     | Full §9 ablation runs locally; threshold sweep documented in `docs/aee/findings.md`. Paper-writing still ahead. |
 
 ## Data sources wired into `scripts/run_entropy_analysis.py`
 
@@ -59,9 +73,9 @@ python3 scripts/run_entropy_analysis.py \
 
 ## Not yet done (explicit follow-ups)
 
-- Run Phase 1 on real Yunjue / Nemotron / Hermes — drivers ready, blocked on HF egress in this container.
+- **Calibrate regime thresholds** on Yunjue / Nemotron / Hermes — current cutoffs are synthetic-only.
+- **Deterministic-pipeline implementation** of a top-K-path workflow as the comparison point for the `DETERMINISTIC` regime (expected to push cost savings from ~78% to ~95%).
+- Run on real Yunjue / Nemotron / Hermes — drivers ready, blocked on HF egress in this container.
 - LangGraph + AgentTrace SDK span instrumentation (PRD §6.3).
-- Small-model routing arm of the ablation (PRD §5.2 third component).
-- Wire token/USD cost numbers — either through `src/redundancy/cost_model.py`
-  or fresh pricing per PRD §5.3.
 - TRAIL benchmark error-pattern analysis (PRD §6.2 — secondary, lower priority).
+- Paper itself, now with the reframe as the spine.
