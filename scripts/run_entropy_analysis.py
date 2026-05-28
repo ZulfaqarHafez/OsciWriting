@@ -123,6 +123,109 @@ def phase1_entropy(sequences: list[tuple[str, ...]], outdir: Path) -> dict:
     return summary
 
 
+def task_level_quality(
+    rows: list[dict],
+    train_seqs: list[tuple[str, ...]],
+    threshold: float,
+) -> dict:
+    """Task-level quality regression metric (PRD §5.3 acceptance bar).
+
+    Step-level qual reg under-reports the real impact of a router that
+    swaps the LLM's next-tool choice with the n-gram top-1: an agent
+    often self-corrects from a wrong tool. Task-level measurement asks
+    "did the trace originally succeed, and would AEE's intervention
+    have likely flipped it to failure?"
+
+    We can't re-run the agents, so we report three numbers:
+
+      * baseline task success rate
+      * UPPER-BOUND regression: every trace where AEE would have changed
+        at least one tool decision counts as a potential failure.
+      * within-task COUNTERFACTUAL regression: a modified trace is
+        marked failed only if NO other trial of the same task succeeded
+        while following the router's chosen tool at the diverged step.
+        (Lower than the upper bound; uses other trials as proxies.)
+    """
+    from agentpathrouter import NgramEntropyEstimator
+    from collections import defaultdict
+
+    # Only meaningful where reward + task_id are populated (tau-bench).
+    eligible = [r for r in rows
+                if r.get("reward") is not None and r.get("task_id")]
+    if not eligible:
+        return {}
+
+    est = NgramEntropyEstimator(n=3).fit(train_seqs)
+    by_task: dict[str, list[dict]] = defaultdict(list)
+    for r in eligible:
+        by_task[str(r["task_id"])].append(r)
+
+    n_total = len(eligible)
+    n_success_baseline = sum(1 for r in eligible if r["reward"] >= 1.0)
+    baseline_rate = n_success_baseline / n_total
+
+    upper_bound_failures = 0
+    counterfactual_failures = 0
+
+    for r in eligible:
+        if r["reward"] < 1.0:
+            continue  # only originally-successful traces can regress
+        tools = r["tools"]
+        # Walk the trace, find first step where the router would have
+        # routed to small model with predicted ≠ actual.
+        first_divergence: tuple[int, str] | None = None
+        for i, actual in enumerate(tools):
+            history = tools[:i]
+            predicted, conf = est.top1(history)
+            if conf >= threshold and predicted != actual:
+                first_divergence = (i, predicted)
+                break
+        if first_divergence is None:
+            continue  # not modified by AEE → unchanged
+        upper_bound_failures += 1
+
+        # Counterfactual: did any other trial of this task succeed while
+        # following ``predicted`` at step i?
+        step_idx, pred_tool = first_divergence
+        same_task = by_task[str(r["task_id"])]
+        prefix = tuple(tools[:step_idx])
+        rescued = False
+        for sibling in same_task:
+            if sibling is r:
+                continue
+            st = sibling["tools"]
+            if len(st) <= step_idx:
+                continue
+            # Same prefix up to step_idx AND chose ``predicted`` at step_idx
+            if tuple(st[:step_idx]) == prefix and st[step_idx] == pred_tool:
+                if sibling["reward"] >= 1.0:
+                    rescued = True
+                    break
+        if not rescued:
+            counterfactual_failures += 1
+
+    return {
+        "n_eligible_traces": n_total,
+        "baseline_task_success_rate": round(baseline_rate, 4),
+        "baseline_successes": n_success_baseline,
+        "upper_bound_regression_count": upper_bound_failures,
+        "upper_bound_regression_rate": round(
+            upper_bound_failures / n_success_baseline, 4
+        ) if n_success_baseline else 0.0,
+        "counterfactual_regression_count": counterfactual_failures,
+        "counterfactual_regression_rate": round(
+            counterfactual_failures / n_success_baseline, 4
+        ) if n_success_baseline else 0.0,
+        "interpretation": (
+            "Upper-bound = pessimistic (every router-modified trace fails). "
+            "Counterfactual = a modified trace is only counted as failed "
+            "if no other trial of the same task succeeded while following "
+            "the router's chosen tool at the divergence point. The true "
+            "task-level regression is between these two values."
+        ),
+    }
+
+
 def within_task_entropy(rows: list[dict]) -> dict:
     """Average path entropy *within* clusters of traces sharing a task_id.
 
@@ -423,12 +526,26 @@ def main() -> None:
             f"{c['pct_saved_vs_baseline']*100:>6.1f}%"
         )
 
+    # ---- task-level quality (PRD §5.3 acceptance bar) ----
+    tlq = task_level_quality(rows, train, args.small_model_threshold)
+    if tlq:
+        step_qreg = p4["cache+spec+routing"]["quality_regression_rate"]
+        print("[task-level quality]")
+        print(f"  baseline task success rate:     {tlq['baseline_task_success_rate']*100:.1f}%")
+        print(f"  step-level regression (existing): {step_qreg*100:.2f}%")
+        print(f"  UPPER-BOUND task regression:    {tlq['upper_bound_regression_rate']*100:.2f}% "
+              f"({tlq['upper_bound_regression_count']}/{tlq['baseline_successes']} successes affected)")
+        print(f"  COUNTERFACTUAL task regression: {tlq['counterfactual_regression_rate']*100:.2f}% "
+              f"({tlq['counterfactual_regression_count']}/{tlq['baseline_successes']})")
+        (args.outdir / "task_level_quality.json").write_text(json.dumps(tlq, indent=2))
+
     # ---- combined ----
     combined = {
         "source": source_used,
         "regime": regime.as_dict(),
         "phase1": p1,
         "phase4": p4,
+        "task_level_quality": tlq or None,
     }
     out_name = f"summary_{source_used.replace(':', '_').replace('/', '_')}.json"
     (args.outdir / out_name).write_text(json.dumps(combined, indent=2))

@@ -108,6 +108,8 @@ def _normalise(rows: Iterable[dict], id_field: str = "id") -> list[dict]:
             "tools":     list[str],
             "tool_args": list[dict],   # parallel to tools, per-call args
             "args":      dict,         # legacy trace-level args (kept for back-compat)
+            "task_id":   str | None,   # for clustering / task-level metrics
+            "reward":    float | None, # ground-truth task success (0/1) if available
             "raw":       Any,
         }
     """
@@ -123,11 +125,26 @@ def _normalise(rows: Iterable[dict], id_field: str = "id") -> list[dict]:
             "q": (r.get("question") or r.get("query") or r.get("task")
                   or r.get("prompt") or "")[:64],
         }
+        # Reward signal — tau-bench stores it in reward_info.reward
+        reward = None
+        ri = r.get("reward_info")
+        if isinstance(ri, dict) and "reward" in ri:
+            try:
+                reward = float(ri["reward"])
+            except (TypeError, ValueError):
+                reward = None
+        elif "reward" in r:
+            try:
+                reward = float(r["reward"])
+            except (TypeError, ValueError):
+                reward = None
         out.append({
             "id": str(rid),
             "tools": tools,
             "tool_args": tool_args,
             "args": trace_args,
+            "task_id": r.get("task_id"),
+            "reward": reward,
             "raw": r,
         })
     return out

@@ -99,6 +99,48 @@ verification process showed:
    *"path entropy must be measured within-task on multi-trial corpora;
    corpus-level entropy hides the actual structure."*
 
+### Task-level vs step-level quality regression
+
+The earlier 0.17% number for τ-retail at T=0.90 was a **step-level**
+metric: fraction of agent steps where the small-model router would have
+chosen a different tool than the actual trace. PRD §5.3 specifically
+requires *task-level* success-rate delta < 2%. These are different in
+general because agents often self-correct from a wrong tool.
+
+tau-bench supplies `reward_info.reward ∈ {0, 1}` per simulation, so we
+can measure properly. Two bounds (we can't re-run the agents):
+
+* **Upper-bound (pessimistic):** every originally-successful trace
+  where the router would have changed any tool decision is counted as
+  a potential failure.
+* **Counterfactual (within-task):** a modified trace is counted as
+  failed only if no *other* trial of the same task succeeded while
+  following the router's chosen tool at the divergence step.
+
+The true regression is between these two. Sweep on τ-retail:
+
+| T    | Cost saved | Step-level qreg | UB task qreg | Counterfactual | PRD-compliant? |
+|-----:|-----------:|----------------:|-------------:|---------------:|----------------|
+| 0.85 |     67.6 % |          1.07 % | **17.17 %**  |        4.61 %  | No             |
+| 0.90 |     66.0 % |          0.17 % |     3.40 %   |        1.36 %  | Ambiguous      |
+| 0.92 |     66.0 % |          0.17 % |     3.40 %   |        1.36 %  | Ambiguous      |
+| **0.95** | **64.0 %** |    0.09 % |   **0.45 %** |        0.30 %  | **Yes**        |
+| 0.97 |     63.8 % |          0.06 % |     0.38 %   |        0.23 %  | Yes            |
+| 0.99 |     63.7 % |          0.04 % |     0.15 %   |        0.00 %  | Yes            |
+
+Step-level regression systematically under-reports task-level regression
+by 4–20×. Worth flagging in the paper as a methodological caveat —
+papers that report step-level numbers will mislead.
+
+The PRD-compliant operating point on τ-retail is **T = 0.95**, giving:
+
+> **64.0% cost saved at <0.45% upper-bound task-level regression
+> (counterfactual 0.30%)** on 1,822 customer-service simulations
+> (τ-bench retail, baseline task success 72.6%).
+
+That's the corrected headline. It drops 2 pp from the earlier 66% claim
+at T=0.90, but is now in the right metric and clearly under the PRD cap.
+
 ### Refined recommendation for the paper
 
 Two-axis regime grid replaced by a **clustering-then-classification**
@@ -115,13 +157,18 @@ pipeline:
 
 Honest hook now reads:
 
-> We show that **66% of inference cost** in a state-of-the-art customer-
-> service benchmark (τ-bench retail) **can be saved at 0.17% quality
-> regression** via path-level caching plus small-model routing. The
-> taxonomy that predicted this called for full-agent treatment — but
-> only because corpus-level path entropy averaged across 114 distinct
-> tasks. Within-task entropy is moderate (2.30 bits), which is the
-> signal a taxonomy should actually use.
+> We show that **64% of inference cost** in a state-of-the-art customer-
+> service benchmark (τ-bench retail) **can be saved at <0.45% task-level
+> quality regression** (counterfactual 0.30%) via path-level caching
+> plus small-model routing. The taxonomy that predicted this called for
+> full-agent treatment — but only because corpus-level path entropy
+> averaged across 114 distinct tasks. Within-task entropy is moderate
+> (2.30 bits), which is the signal a taxonomy should actually use.
+>
+> The headline figure that step-level quality metrics suggested (0.17%)
+> was an under-count of ~10× vs the true task-level number measured
+> against ground-truth reward signals. Papers reporting step-level
+> regression alone are likely under-stating real impact.
 
 ### Hidden lesson
 
