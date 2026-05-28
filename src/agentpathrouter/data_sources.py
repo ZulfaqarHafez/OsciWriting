@@ -80,17 +80,25 @@ def _extract_tools(row: dict) -> list[str]:
     return [t for t, _ in _extract_tools_with_args(row)]
 
 
-def _extract_tools_with_args(row: dict) -> list[tuple[str, dict]]:
+def _extract_tools_with_args(
+    row: dict, requestor_filter: str | None = None
+) -> list[tuple[str, dict]]:
     """Return ``[(tool, args), ...]`` for one row, preferring structured
     extraction over regex.
 
     Regex fallback only knows tool names (no args available in raw log
     strings) — those entries get an empty args dict, which conservatively
     means cache keys won't over-merge.
+
+    ``requestor_filter`` is forwarded to the structured-message extractor;
+    used by the tau-bench loader to drop user-simulator tool calls (which
+    are not agent decisions and would inflate path lengths by ~49%).
     """
     msgs = _walk_for_messages(row)
     if msgs:
-        seq = extract_tool_calls_with_args_from_messages(msgs)
+        seq = extract_tool_calls_with_args_from_messages(
+            msgs, requestor_filter=requestor_filter
+        )
         if seq:
             return seq
     try:
@@ -100,7 +108,11 @@ def _extract_tools_with_args(row: dict) -> list[tuple[str, dict]]:
     return [(t, {}) for t in extract_tool_sequence(blob)]
 
 
-def _normalise(rows: Iterable[dict], id_field: str = "id") -> list[dict]:
+def _normalise(
+    rows: Iterable[dict],
+    id_field: str = "id",
+    requestor_filter: str | None = None,
+) -> list[dict]:
     """Per-row normalisation. Output schema:
 
         {
@@ -115,7 +127,7 @@ def _normalise(rows: Iterable[dict], id_field: str = "id") -> list[dict]:
     """
     out: list[dict] = []
     for i, r in enumerate(rows):
-        pairs = _extract_tools_with_args(r)
+        pairs = _extract_tools_with_args(r, requestor_filter=requestor_filter)
         if not pairs:
             continue
         tools = [p[0] for p in pairs]
@@ -256,7 +268,12 @@ def load_tau_bench(dir_path: str | Path) -> list[dict]:
                 rows.append(sim)
     if not rows:
         raise DatasetUnavailable(f"no JSON traces found under {p}")
-    return _normalise(rows)
+    # tau-bench's user simulator also calls tools through the same
+    # tool_calls schema (tagged ``requestor: "user"``). Those are NOT
+    # agent decisions, so filter them out — otherwise ~49% of the
+    # extracted "tool calls" are user-side and inflate every downstream
+    # metric.
+    return _normalise(rows, requestor_filter="assistant")
 
 
 # ---------------------------------------------------------------------------

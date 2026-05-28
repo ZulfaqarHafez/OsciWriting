@@ -339,6 +339,104 @@ cheaper to fit. No reason to use n≥4.
 Cache hit rate is independent of n (PathCache doesn't use the
 estimator), so the 63.1% headline doesn't depend on this choice.
 
+### P3.3 — Extractor robustness audit (found a real bug)
+
+Per-sim ground-truth tool-call count vs extractor output:
+
+    total sims:                    10,832
+    sims exact match (before fix): 6,434 (59.40%)
+    sums:    ground truth = 99,236   extracted = 147,962    delta = +48,726
+
+**The extractor was over-counting by 49%.** Cause: tau2-bench's user
+simulator also calls tools through the same ``tool_calls`` schema,
+tagged ``requestor: "user"``. The extractor caught them all; the
+ground-truth counter only saw assistant-side calls. So ~half of every
+"agent tool call" I was measuring was actually a *user* tool call —
+not an agent decision.
+
+Fix: added a ``requestor_filter="assistant"`` parameter to
+``extract_tool_calls_with_args_from_messages``; tau-bench loader
+defaults to it. Post-fix audit: **100.00% exact match, +0 net delta.**
+
+Impact on prior numbers:
+
+| Corpus              | Before fix             | After fix             | Why no shift / why shift? |
+|---------------------|------------------------|-----------------------|---------------------------|
+| **τ-retail**        | 64.0% saved, 0.45% UB  | **64.0% saved, 0.45% UB** | retail has 100% assistant requestor — clean already |
+| **τ2-bench (all)**  | 44.0% saved, 1.12% step| **48.9% saved, 0.79% UB** | 49% of "tool calls" were user-side; removing them tightened paths and shifted savings up |
+
+τ-retail's clean number was a coincidence — the retail user simulator
+doesn't call tools. The full corpus (mostly telecom) does, and that's
+where the inflation came from. Headline now stands:
+**τ-retail 64.0% / 0.45% UB at T=0.95**; **τ2-full 48.9% / 0.79% UB at T=0.97**.
+
+### P2.2 — Within-task-aware classifier + cross-corpus calibration
+
+`taxonomy.classify` operated on corpus-level path entropy alone. P1.2
+and P3.2 showed that's the wrong signal on multi-trial benchmarks:
+within-task entropy correlates with cache hit rate (Spearman ρ ≈ -0.40
+under clean (task, model) clustering), corpus-level does not.
+
+Added ``classify_with_clusters(clusters)`` that takes
+``{task_id: [trace, ...]}`` and classifies on **mean within-task path
+entropy**. Preliminary cutoffs from the four corpora measured here:
+
+| Within-task H | Regime         |
+|---------------|----------------|
+| ≤ 1.0 bits    | DETERMINISTIC  |
+| 1.0 – 5.0     | HYBRID         |
+| > 5.0         | FULL_AGENT     |
+
+These are calibrated on **4 corpora and should not be treated as
+final** — proper calibration needs more workload variety once
+HuggingFace egress is restored.
+
+### Final corrected cross-corpus table
+
+All numbers below use the per-call args fix (P0/P1.2), the calibrated
+1500-token CostModel default (P1.1), the assistant-only requestor
+filter (P3.3), task-level quality measurement (P0), and the within-
+task classifier (P2.2). Best T is the smallest threshold that keeps
+the upper-bound task regression under the PRD 2 % cap.
+
+| Corpus       | Traces | Corpus H | Top-3  | Corpus verdict | Within-task H | **Within-task verdict** | Best T | **Cost saved** | UB qreg | Counterfact |
+|--------------|-------:|---------:|-------:|----------------|--------------:|------------------------:|-------:|---------------:|--------:|------------:|
+| Synthetic FR |  1,000 |   1.02 b |  95.4% | DETERMINISTIC  |     n/a       | (defers)                |  0.90  |       **78.2%**|    n/a  |     n/a     |
+| TRAIL        |    148 |   5.06 b |  39.2% | HYBRID         |     n/a       | (defers, no replays)    |  0.90  |       **19.6%**|    n/a  |     n/a     |
+| τ-retail     |  1,822 |   8.43 b |   6.7% | FULL ❌        |    2.30 b     |     **HYBRID ✓**        |  0.95  |       **64.0%**|  0.45 % |    0.30 %   |
+| τ2-bench all | 10,832 |  10.79 b |   8.0% | FULL ❌        |    4.69 b     |     **HYBRID ✓**        |  0.97  |       **48.9%**|  0.79 % |    0.73 %   |
+
+The within-task classifier correctly reclassifies both tau-bench
+corpora from FULL → HYBRID — matching the observed cost savings.
+Corpus-level entropy alone falsely says "AEE doesn't help" on
+exactly the workloads where it helps most.
+
+### What survives across every verification
+
+The original PRD framing was "cache repetitive agent workflows for
+inference cost reduction." After six verification passes, the
+defensible claims that remain are:
+
+1. **On a multi-trial customer-service benchmark with deterministic
+   CRUD tools (τ-bench retail), 64.0% of inference cost can be saved
+   at <0.45 % upper-bound task-level quality regression** — clearly
+   under the PRD 2 % bar — via PathCache + small-model routing
+   (threshold T=0.95).
+2. **On the full tau2-bench corpus (4 domains, 8 LLMs, 10,832 sims),
+   48.9% can be saved at <0.79 % UB regression** — at T=0.97. Domains
+   with stateful tools (telecom) need to denylist non-idempotent
+   tools from cache (P3.1: stale hit rate 56% otherwise).
+3. **Speculation is a latency intervention, not a cost intervention**
+   — its net cost contribution is small and stays positive across
+   tool execution costs from $0 to $0.10/call.
+4. **The right execution-regime signal is within-task path entropy
+   after clustering by (task_id, model)** — not corpus-level entropy
+   (which mixes distinct tasks and washes out structure). Correlation
+   with cache hit rate is moderate (ρ ≈ -0.40).
+5. **Step-level quality metrics under-report task-level regression
+   by 4–20×**; reporting only step-level numbers as the field
+   sometimes does will materially under-state real impact.
+
 ## Hidden lesson
 
 This is also the cleanest example I have of *why measurement choices

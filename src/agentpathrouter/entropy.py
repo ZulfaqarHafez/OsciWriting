@@ -50,6 +50,7 @@ def extract_tool_sequence(log: str) -> list[str]:
 
 def extract_tool_calls_with_args_from_messages(
     messages: list[dict],
+    requestor_filter: str | None = None,
 ) -> list[tuple[str, dict]]:
     """Like ``extract_tool_sequence_from_messages`` but also returns args.
 
@@ -60,6 +61,11 @@ def extract_tool_calls_with_args_from_messages(
 
     Args may be a dict (already parsed) or a JSON string (some providers
     serialise the call); both are normalised to a dict.
+
+    ``requestor_filter`` (optional): tau-bench tool_calls carry a
+    ``requestor`` field ("assistant" or "user" — the user simulator also
+    calls tools through the same schema). Pass ``"assistant"`` to keep
+    only agent-initiated calls; default None keeps all.
     """
     import json as _json
 
@@ -82,6 +88,10 @@ def extract_tool_calls_with_args_from_messages(
         for tc in msg.get("tool_calls") or []:
             if not isinstance(tc, dict):
                 continue
+            if requestor_filter is not None:
+                req = tc.get("requestor")
+                if req is not None and req != requestor_filter:
+                    continue
             fn = tc.get("function") or {}
             name = fn.get("name") or tc.get("name")
             args_raw = fn.get("arguments") if "arguments" in fn else tc.get("arguments")

@@ -39,6 +39,7 @@ from agentpathrouter import (  # noqa: E402
     NgramEntropyEstimator,
     RunMetrics,
     classify,
+    classify_with_clusters,
     coverage_curve,
 )
 from agentpathrouter.data_sources import DatasetUnavailable, SOURCES, load  # noqa: E402
@@ -495,11 +496,30 @@ def main() -> None:
 
     # ---- regime classification (the headline contribution) ----
     regime = classify(sequences)
-    print(f"[regime] {regime.regime.value.upper()}  "
+    print(f"[regime corpus-level] {regime.regime.value.upper()}  "
           f"(entropy_ratio={regime.entropy_ratio:.2f}, top3={regime.top3_coverage*100:.1f}%)")
     print(f"  rationale: {regime.rationale}")
     print(f"  recommend: {regime.recommendation}")
-    (args.outdir / "regime.json").write_text(json.dumps(regime.as_dict(), indent=2))
+    regime_dict = regime.as_dict()
+
+    # Refined within-task classifier — only when task_id is available.
+    from collections import defaultdict as _dd
+    clusters: dict[str, list[tuple[str, ...]]] = _dd(list)
+    for r in rows:
+        raw = r.get("raw") if isinstance(r.get("raw"), dict) else {}
+        tid = raw.get("task_id") or r.get("task_id")
+        if tid:
+            clusters[str(tid)].append(tuple(r["tools"]))
+    if any(len(v) >= 2 for v in clusters.values()):
+        wt_regime = classify_with_clusters(clusters)
+        print(f"[regime within-task] {wt_regime.regime.value.upper()}  "
+              f"(mean H={wt_regime.path_entropy_bits:.2f} bits, "
+              f"mean top-1={wt_regime.top3_coverage*100:.1f}%)")
+        print(f"  rationale: {wt_regime.rationale}")
+        print(f"  recommend: {wt_regime.recommendation}")
+        regime_dict = {"corpus_level": regime_dict, "within_task": wt_regime.as_dict()}
+
+    (args.outdir / "regime.json").write_text(json.dumps(regime_dict, indent=2))
 
     # ---- train/test split ----
     n_train = max(1, int(len(sequences) * args.train_frac))

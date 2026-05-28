@@ -19,7 +19,7 @@ from .entropy_estimator import NgramEntropyEstimator
 from .speculative import SpeculativePrefetcher
 from .middleware import AgentPathRouter, RunMetrics
 from .cost import CostModel, DEFAULT_PRICES, ModelPrice
-from .taxonomy import Regime, RegimeReport, classify
+from .taxonomy import Regime, RegimeReport, classify, classify_with_clusters
 
 __all__ = [
     "path_entropy",
@@ -37,4 +37,5 @@ __all__ = [
     "Regime",
     "RegimeReport",
     "classify",
+    "classify_with_clusters",
 ]
