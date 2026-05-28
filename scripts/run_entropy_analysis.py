@@ -357,6 +357,7 @@ def phase4_router_eval(
     threshold: float,
     small_model_threshold: float = 0.85,
     tools: dict | None = None,
+    tool_cost: float = 0.0,
 ) -> dict:
     """Train n-gram once, run the §9 Phase-4 ablation across all arms.
 
@@ -366,7 +367,7 @@ def phase4_router_eval(
     est = NgramEntropyEstimator(n=3).fit(train_seqs)
     if tools is None:
         tools = _make_universal_registry(train_seqs, test_traces)
-    cost_model = CostModel()
+    cost_model = CostModel(tool_execution_usd=tool_cost)
 
     results: dict[str, dict] = {}
     for arm_name, cfg in ARMS.items():
@@ -440,6 +441,9 @@ def main() -> None:
     ap.add_argument("--small-model-threshold", type=float, default=0.85,
                     help="Higher confidence bar for small-model routing (a wrong "
                          "route is a quality regression, so the bar is stricter).")
+    ap.add_argument("--tool-cost", type=float, default=0.0,
+                    help="USD per tool execution. Speculation misses incur this as "
+                         "a wasted-tool debit. Default 0 (tau-bench tools are free).")
     ap.add_argument(
         "--outdir",
         type=Path,
@@ -509,6 +513,7 @@ def main() -> None:
         train, test, args.outdir,
         threshold=args.threshold,
         small_model_threshold=args.small_model_threshold,
+        tool_cost=args.tool_cost,
     )
     print("[phase4 ablation]")
     print(f"  {'arm':<22} {'cache':>6} {'spec':>6} {'route':>6} {'qreg':>6} "

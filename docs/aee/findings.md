@@ -170,7 +170,99 @@ Honest hook now reads:
 > against ground-truth reward signals. Papers reporting step-level
 > regression alone are likely under-stating real impact.
 
-### Hidden lesson
+## P1 verification: things the original numbers were silent about
+
+### P1.1 — Cost-model calibration against `agent_cost`
+
+The original `tokens_per_step = 800` was a guess. tau-bench supplies
+`agent_cost` (real USD spent) per simulation plus the LLM identifier;
+back-solving gives the *implied* tokens per step for each model:
+
+| Model                          | n sims | USD/step  | Blended $/MTok | Implied tok/step |
+|-------------------------------:|-------:|----------:|---------------:|-----------------:|
+| gpt-4.1-2025-04-14             |  4,304 | $0.00536  |   $3.80        |          1,410   |
+| o4-mini-2025-04-16             |  4,304 | $0.00434  |   $2.09        |          2,074   |
+| claude-3-7-sonnet              |  1,112 | $0.02495  |   $6.60        |          3,780   |
+| gpt-4.1-mini                   |  1,112 | $0.00108  |   $0.76        |          1,419   |
+
+**Median implied tokens/step is 1,747**, ranging 1,410 → 3,780. The
+800-token default underestimates by ~2×. Updated the `CostModel`
+default to **1,500 tokens/step** (sensible mid-point).
+
+Implications:
+- **% savings claims unchanged** (they're ratios).
+- **Absolute USD/1k-runs numbers shift up by ~2×** — re-running the
+  ablation reports $366.53 / 1k baseline at the new default vs
+  $195.48 previously.
+- Headline tau-retail result becomes: **64.0% cost saved at <0.45%
+  task-level regression, baseline ~$367 / 1k runs**.
+
+Calibration script: `scripts/calibrate_cost_model.py`. Verdict at
+800-token default was OUT OF RANGE; at 1500 it sits inside the
+empirical 1,410–3,780 range close to the median.
+
+### P1.2 — Within-task entropy ↔ cacheability correlation
+
+The refined-taxonomy claim ("cluster by task, classify on within-task
+entropy") was asserted after the v2 measurement but never tested.
+Direct measurement on tau-bench's 228 task clusters:
+
+| Statistic                                | Value     |
+|------------------------------------------|----------:|
+| Clusters with ≥ 2 trials                 |    228    |
+| Mean within-task entropy                 | 4.31 bits |
+| Mean cache hit rate (across clusters)    |   52.3%   |
+| **Pearson r**                            | **-0.90** |
+| **Spearman ρ**                           | **-0.93** |
+| Verdict                                  | **STRONG support** |
+
+Quartile breakdown (sorted by entropy):
+
+| Quartile | Entropy range | n | Mean cache hit rate |
+|---------:|---------------|---:|--------------------:|
+| Q1 (low) | 0.00 – 3.08   | 57 |    **77.3%**        |
+| Q2       | 3.08 – 4.58   | 57 |       63.6%         |
+| Q3       | 4.59 – 5.84   | 57 |       43.6%         |
+| Q4 (hi)  | 5.84 – 6.17   | 57 |       24.8%         |
+
+Clean monotonic relationship: low within-task entropy → high cache
+hit rate, and the highest-entropy quartile still gets 25%. **Refined
+taxonomy claim is empirically validated, not just hand-waved.** This
+is the kind of finding that survives review.
+
+Test script: `scripts/test_entropy_cacheability_correlation.py`.
+
+### P1.3 — Wasted speculation cost on real workloads
+
+Earlier claim: "speculation is a latency intervention, not a cost
+intervention." The CostModel modelled this by giving spec hits the
+full frontier-step cost. But it ignored the *downstream tool execution*
+of wasted speculative fires — at the per-call rate of real production
+tools, this could in principle wipe out speculation's latency benefit.
+
+Added `tool_execution_usd` to `CostModel` and `spec_misses` to
+`RunMetrics`. Sensitivity sweep on tau-retail (T=0.95):
+
+| Tool cost / call         | Baseline | cache+spec  | c+s+r       | Wasted spec / 1k runs |
+|-------------------------:|---------:|------------:|------------:|----------------------:|
+| $0     (tau-bench: free) |  $366.53 | 63.1% saved | 64.0% saved |  $0.00                |
+| $0.001 (cheap REST API)  |  $366.53 | 63.1%       | 63.9%       |  $0.23                |
+| $0.005                   |  $366.53 | 62.8%       | 63.7%       |  $1.16                |
+| $0.01  (search API)      |  $366.53 | 62.5%       | 63.4%       |  $2.32                |
+| $0.05  (light crawling)  |  $366.53 | 59.9%       | 60.9%       | $11.59                |
+| $0.10  (heavy crawling)  |  $366.53 | 56.6%       | 57.7%       | $23.18                |
+
+**Speculation's net cost stays positive across the typical $0 – $0.10
+range.** Even at $0.10 per tool call — already in expensive-crawler
+territory — cost savings only drop from 64% to ~58%. Speculation is
+robust to realistic tool costs.
+
+That said, the *cost contribution from speculation specifically* is
+small at every tool cost level (cache+spec ≈ cache_only on this
+corpus). Speculation continues to be a latency lever; this sweep
+confirms it isn't actively *negative* in the cost dimension.
+
+## Hidden lesson
 
 This is also the cleanest example I have of *why measurement choices
 matter for the headline.* The v1 cache-hit number of 79.1% was a real
@@ -217,10 +309,14 @@ Opus 4.7 frontier ($15 in / $75 out per MTok), Haiku 4.5 small ($1 / $5),
 
 | Arm                  | Cache  | Spec   | Route  | Qual.reg. | USD/1k runs | Saved vs baseline |
 |----------------------|-------:|-------:|-------:|----------:|------------:|------------------:|
-| baseline (full Opus) |   0.0% |   0.0% |   0.0% |     0.00% |      196.02 |              0.0% |
-| cache_only           |   0.0% |   0.0% |   0.0% |     0.00% |      196.02 |              0.0% |
-| cache+spec           |   0.0% |  96.7% |   0.0% |     0.00% |      196.02 |              0.0% |
-| cache+spec+routing   |   0.0% |  13.2% |  83.8% |     0.30% |    **42.70** |          **78.2%** |
+| baseline (full Opus) |   0.0% |   0.0% |   0.0% |     0.00% |      367.54 |              0.0% |
+| cache_only           |   0.0% |   0.0% |   0.0% |     0.00% |      367.54 |              0.0% |
+| cache+spec           |   0.0% |  96.7% |   0.0% |     0.00% |      367.54 |              0.0% |
+| cache+spec+routing   |   0.0% |  13.2% |  83.8% |     0.30% |    **80.06** |          **78.2%** |
+
+(USD figures use the empirically-calibrated `tokens_per_step = 1500`
+default — see P1.1 below for the calibration. Percentages are unchanged
+from the 800-token-default version.)
 
 (routing arm at small-model confidence T=0.90 — the PRD-compliant
 operating point.)

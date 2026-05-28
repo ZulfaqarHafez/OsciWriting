@@ -35,6 +35,7 @@ class RunMetrics:
     steps: int = 0
     cache_hits: int = 0
     spec_hits: int = 0
+    spec_misses: int = 0         # speculation fired but the LLM picked a different tool
     full_calls: int = 0          # frontier model handled the step
     small_model_calls: int = 0   # small-model routing handled the step
     small_model_errors: int = 0  # routed but predicted ≠ actual (quality regression)
@@ -60,6 +61,7 @@ class RunMetrics:
         self.steps += other.steps
         self.cache_hits += other.cache_hits
         self.spec_hits += other.spec_hits
+        self.spec_misses += other.spec_misses
         self.full_calls += other.full_calls
         self.small_model_calls += other.small_model_calls
         self.small_model_errors += other.small_model_errors
@@ -135,6 +137,12 @@ class AgentPathRouter:
                 metrics.spec_hits += 1
                 self.cache.put(actual_tool, history, args, value)
                 return value
+            # Speculation fired but the LLM chose a different tool — the
+            # tool we pre-fired ran to completion (or was cancelled mid-
+            # flight) and its work is discarded. That's a wasted tool
+            # execution: counted against speculation in the cost model
+            # when tool_execution_usd > 0.
+            metrics.spec_misses += 1
             fut.cancel()
 
         metrics.full_calls += 1
