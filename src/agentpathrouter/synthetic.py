@@ -115,6 +115,92 @@ def generate_corpus(n: int = 500, seed: int = 0) -> list[Trace]:
 
 
 # ---------------------------------------------------------------------------
+# Controlled-entropy generator (for regime-cutoff calibration)
+# ---------------------------------------------------------------------------
+#
+# generate_corpus above has a *fixed* branching distribution. To calibrate
+# the regime cutoffs we need to dial within-task entropy across the full
+# range and observe how cache hit rate / cost savings respond. This
+# generator produces ``n_tasks`` tasks, each with ``trials_per_task``
+# replays drawn from ``n_variants`` distinct execution paths under a
+# Zipfian distribution whose skew is set by ``concentration``:
+#
+#     concentration -> inf : all trials take variant 0   (within-task H = 0)
+#     concentration = 1    : Zipf(1) — moderate skew
+#     concentration -> 0   : near-uniform over variants   (H -> log2(n_variants))
+#
+# Per-call args are made deterministic per (task, step) so PathCache hits
+# whenever the same path recurs within a task — i.e. cacheability tracks
+# within-task entropy by construction, which is exactly the relationship
+# we want to *measure* the strength of, not assume.
+
+
+def _variant_path(base_len: int, variant: int, divergence_breadth: int = 1) -> list[str]:
+    """A deterministic execution path for a given variant index.
+
+    ``divergence_breadth`` controls how many of the ``base_len`` steps a
+    non-zero variant replaces with variant-specific tools. breadth=1
+    diverges at one step (most steps stay shared → high cacheability
+    floor); breadth=base_len makes every step variant-specific (no shared
+    structure → cacheability can collapse to ~0, enabling a true
+    FULL_AGENT regime in the calibration sweep).
+    """
+    tools = [f"step_{j}" for j in range(base_len)]
+    if variant > 0:
+        breadth = max(1, min(divergence_breadth, base_len))
+        # Spread the diverging positions evenly through the path.
+        for k in range(breadth):
+            pos = (variant + k * (base_len // breadth + 1)) % base_len
+            tools[pos] = f"branch_{variant}_{pos}"
+    return tools
+
+
+def generate_controlled_corpus(
+    n_tasks: int = 50,
+    trials_per_task: int = 16,
+    n_variants: int = 8,
+    concentration: float = 1.0,
+    base_len: int = 7,
+    divergence_breadth: int = 1,
+    seed: int = 0,
+) -> list[dict]:
+    """Generate a corpus with tunable within-task entropy.
+
+    Returns rows in the same shape the data-source loaders emit
+    (``id``, ``tools``, ``tool_args``, ``args``, ``task_id``, ``reward``,
+    ``raw``) so the calibration harness can feed them straight through
+    the router.
+
+    ``concentration`` controls the Zipf skew over variant paths: large =>
+    low within-task entropy, small => high. Each task gets an independent
+    variant ordering so tasks differ from one another.
+    """
+    rng = random.Random(seed)
+    rows: list[dict] = []
+    for t in range(n_tasks):
+        # Per-task weights over variants: Zipfian raised to ``concentration``.
+        order = list(range(n_variants))
+        rng.shuffle(order)
+        weights = [1.0 / ((rank + 1) ** concentration) for rank in range(n_variants)]
+        for trial in range(trials_per_task):
+            variant = rng.choices(order, weights=weights, k=1)[0]
+            tools = _variant_path(base_len, variant, divergence_breadth)
+            # Deterministic per-call args keyed on (task, step position):
+            # identical whenever the same path recurs in the same task.
+            tool_args = [{"task": t, "pos": j} for j in range(len(tools))]
+            rows.append({
+                "id": f"ctrl-{t:04d}-{trial:03d}",
+                "tools": tools,
+                "tool_args": tool_args,
+                "args": {"task": t},
+                "task_id": f"ctrl-task-{t:04d}",
+                "reward": 1.0,
+                "raw": {"task_id": f"ctrl-task-{t:04d}", "variant": variant},
+            })
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Tool stubs (used by the middleware when actually "executing" a synthetic run)
 # ---------------------------------------------------------------------------
 

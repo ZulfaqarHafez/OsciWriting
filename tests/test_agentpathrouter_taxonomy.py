@@ -102,11 +102,13 @@ def test_within_task_ignores_single_trial_clusters():
     """Multi-trial clusters should drive the verdict; single-trial ones
     must not push it lower by contributing zero-entropy datapoints."""
     clusters = {
-        "multi": [("a",), ("b",), ("c",), ("d",)],  # high entropy
+        # 8 distinct uniform paths → 3 bits, squarely in the HYBRID band
+        # (DET ≤ 2.0, FULL > 4.0).
+        "multi": [(f"p{j}",) for j in range(8)],
         "single_1": [("x",)],
         "single_2": [("y",)],
     }
     r = classify_with_clusters(clusters)
-    # The signal is dominated by the single multi-trial cluster (2 bits H);
+    # The signal is dominated by the single multi-trial cluster (3 bits H);
     # the single-trial clusters are skipped. Result lands in HYBRID, not DET.
     assert r.regime is Regime.HYBRID

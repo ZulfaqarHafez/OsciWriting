@@ -171,24 +171,32 @@ def classify(sequences) -> RegimeReport:
 #
 # P1.2 / P3.2 / P3.3 verifications showed that corpus-level path entropy
 # on multi-trial benchmarks averages across many distinct tasks and
-# hides the per-task structure. Within-task entropy is moderately
-# correlated with cache hit rate (Spearman ρ ≈ -0.40 under clean
-# (task, model) clustering), and is the signal that maps to AEE savings.
+# hides the per-task structure. Within-task entropy is the signal that
+# maps to AEE savings.
 #
-# Thresholds calibrated against the four corpora measured to date:
+# CALIBRATION (P2.2, scripts/calibrate_regime_cutoffs.py): across 20
+# workload points — 14 controlled-synthetic (ground-truth entropy via
+# generate_controlled_corpus) + 4 tau-bench domains + 2 TRAIL subsets —
+# within-task entropy correlates with cache hit rate at r = -0.86 and
+# with cost saved at r = -0.84 *at the workload level*. (Per-cluster the
+# correlation is only ρ ≈ -0.40; aggregating to the workload washes out
+# per-cluster noise — both numbers are real, at different granularities.)
 #
-#     Synthetic    Mean within-task H = 0.x (single-task)    → DETERMINISTIC
-#     tau-retail   Mean within-task H = 2.30 b → 64% saved   → HYBRID
-#     tau2 all     Mean within-task H = 4.03 b → 50% saved   → HYBRID
-#     (TRAIL has no replays, only the corpus-level classifier applies)
+# Savings-based boundaries from the sweep:
+#     within-task H ≤ 2.0 b  → ≥85% cost saved  → DETERMINISTIC
+#     within-task H > 4.0 b  → <25% cost saved  → FULL_AGENT (but see caveat)
 #
-# Cutoffs are *preliminary* — 4 corpora is not enough to calibrate
-# confidently, and we already know from P3.1 (cache determinism) that
-# the regime must additionally account for per-tool determinism before
-# recommending cache.
+# CAVEAT — entropy is necessary but not sufficient at the high end.
+# Divergence *structure* confounds it: at the same H≈3.7, divergence
+# concentrated at one step saved 52% while divergence spread across all
+# steps saved only 26% (longer shared prefix = more cacheable). Real
+# telecom sits at H=4.7 yet still saves 47% because its divergence is
+# concentrated. So the FULL cutoff over-predicts: prefer a direct
+# cache-hit probe on a sample over an entropy threshold in the H>4 region.
+# Per-tool determinism (P3.1) is a separate, mandatory gate regardless.
 
-T_WT_DETERMINISTIC_BITS = 1.0   # mean within-task entropy below this → DET
-T_WT_FULL_AGENT_BITS = 5.0      # above this → cache saturates below ~30%
+T_WT_DETERMINISTIC_BITS = 2.0   # ≤ this → ≥85% saved (well-calibrated)
+T_WT_FULL_AGENT_BITS = 4.0      # > this → <25% saved IF divergence is spread
 
 
 def classify_with_clusters(clusters: dict[str, list]) -> RegimeReport:
@@ -262,7 +270,7 @@ def classify_with_clusters(clusters: dict[str, list]) -> RegimeReport:
         f"Mean within-task entropy {mean_h:.2f} bits across "
         f"{len(multi)} multi-trial clusters; "
         f"mean within-task top-1 coverage {mean_top1*100:.1f}%. "
-        f"Cutoffs (preliminary, calibrated on 4 corpora): "
+        f"Cutoffs (calibrated on 20 workload points, savings-based): "
         f"DET ≤ {T_WT_DETERMINISTIC_BITS}, FULL > {T_WT_FULL_AGENT_BITS} bits."
     )
 

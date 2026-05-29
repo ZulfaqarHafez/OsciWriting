@@ -437,6 +437,82 @@ defensible claims that remain are:
    by 4–20×**; reporting only step-level numbers as the field
    sometimes does will materially under-state real impact.
 
+## P2.2 (extended) — Regime-cutoff calibration across 20 workload points
+
+The within-task cutoffs (≤1.0 DET, >5.0 FULL) were flagged "preliminary —
+4 corpora is not enough." Without HuggingFace I widened the variety using
+what's reachable: tau-bench sliced by domain (4), TRAIL subsets (2), and a
+**controlled-entropy synthetic generator** (`generate_controlled_corpus`)
+that dials within-task entropy with known ground truth (14 points). Total:
+20 workload points, 18 with computable within-task entropy.
+
+Harness: `scripts/calibrate_regime_cutoffs.py`.
+
+### Within-task entropy vs cost saved (selected points)
+
+| Source                        | Within-task H | Cache hit | Cost saved |
+|-------------------------------|--------------:|----------:|-----------:|
+| synth v8/b1  conc=6.0         |        0.10 b |    93.7%  |    95.5%   |
+| synth v8/b1  conc=2.5         |        1.08 b |    86.6%  |    89.8%   |
+| synth v8/b1  conc=1.5         |        1.98 b |    80.2%  |    85.8%   |
+| **τ-retail**                  |      **2.30 b** |  **63.1%**|  **64.0%** |
+| **τ-airline**                 |      **2.86 b** |  **49.5%**|  **51.6%** |
+| synth v64/b1 conc=1.2         |        3.07 b |    64.0%  |    65.6%   |
+| synth v64/b7 conc=0.8         |        3.71 b |    25.9%  |    25.9%   |
+| **τ-telecom-workflow**        |      **4.15 b** |  **39.9%**|  **44.4%** |
+| synth v64/b7 conc=0.4         |        4.00 b |    16.6%  |    16.6%   |
+| **τ-telecom**                 |      **4.70 b** |  **44.9%**|  **47.0%** |
+| synth v64/b7 conc=0.1         |        4.06 b |    10.6%  |    10.6%   |
+
+### Correlation (workload level)
+
+| Relationship                          | Pearson r |
+|---------------------------------------|----------:|
+| within-task H → cache hit rate        |   **-0.86** |
+| within-task H → cost saved            |   **-0.84** |
+
+This is much stronger than the per-cluster P3.2 result (ρ ≈ -0.40).
+Both are real: aggregating to the *workload* level averages out the
+per-cluster noise. The paper should report both granularities — the
+workload-level number is what a practitioner would use to decide
+"apply AEE to this deployment or not."
+
+### Data-driven cutoffs (savings-based)
+
+| Cutoff           | Old (preliminary) | New (calibrated) | Basis |
+|------------------|------------------:|-----------------:|-------|
+| DETERMINISTIC ≤  |           1.0 b   |       **2.0 b**  | highest within-task H still saving ≥85% |
+| FULL_AGENT >     |           5.0 b   |       **4.0 b**  | lowest within-task H with <25% saved (spread-divergence synthetic) |
+
+DET ≤ 2.0 is well-supported: every workload at or below 2 bits saved
+≥85%. The FULL cutoff is **weaker** because of a confound:
+
+### Confound — divergence *structure*, not just entropy
+
+At the **same** within-task entropy H≈3.7, two synthetic workloads
+behaved very differently:
+
+| Divergence structure         | H     | Cost saved |
+|------------------------------|------:|-----------:|
+| concentrated (1 step varies) | 3.71 b|    52.5%   |
+| spread (all steps vary)      | 3.71 b|    25.9%   |
+
+Concentrated divergence keeps a long shared prefix, which stays
+cacheable; spread divergence destroys the prefix. **Real τ-telecom sits
+at H=4.7 yet still saves 47%** because its divergence is concentrated —
+so the entropy-only FULL cutoff (>4.0) would mis-label it FULL when it's
+actually a profitable HYBRID.
+
+Conclusion: **within-task entropy is the primary signal (r≈-0.85) and a
+clean DET threshold at 2.0 bits, but in the H>4 region it must be paired
+with a direct cache-hit probe** because divergence structure confounds
+it. The taxonomy comment and constants now reflect this.
+
+This is the fourth honest finding in the verification arc that constrains
+an earlier claim: corpus entropy → within-task entropy → moderate
+per-cluster correlation → and now "entropy alone is insufficient at the
+high end; structure matters."
+
 ## Hidden lesson
 
 This is also the cleanest example I have of *why measurement choices
