@@ -14,7 +14,7 @@ from .entropy import (
     extract_tool_sequence_from_messages,
     extract_tool_calls_with_args_from_messages,
 )
-from .path_cache import PathCache
+from .path_cache import PathCache, DeterminismFilter
 from .entropy_estimator import NgramEntropyEstimator
 from .speculative import SpeculativePrefetcher
 from .middleware import AgentPathRouter, RunMetrics
@@ -27,6 +27,7 @@ __all__ = [
     "extract_tool_sequence",
     "extract_tool_sequence_from_messages",
     "PathCache",
+    "DeterminismFilter",
     "NgramEntropyEstimator",
     "SpeculativePrefetcher",
     "AgentPathRouter",

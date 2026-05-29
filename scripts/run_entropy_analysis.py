@@ -295,11 +295,12 @@ def _run_arm(
     threshold: float,
     small_model_threshold: float,
     cost_model: CostModel,
+    determinism_filter=None,
 ) -> dict:
     """Run one ablation arm and return its aggregate metrics + cost block."""
     # The baseline arm models "full frontier inference, no AEE": disable
     # the cache by passing a one-shot cache that never returns hits.
-    from agentpathrouter.path_cache import PathCache as _Cache
+    from agentpathrouter.path_cache import DeterminismFilter, PathCache as _Cache
 
     class _NullCache(_Cache):
         def get(self, *args, **kwargs):  # type: ignore[override]
@@ -308,7 +309,12 @@ def _run_arm(
         def put(self, *args, **kwargs):  # type: ignore[override]
             return None
 
-    cache = _NullCache() if cfg.get("no_cache") else _Cache()
+    if cfg.get("no_cache"):
+        cache = _NullCache()
+    else:
+        # Apply the determinism filter only on arms that opt in.
+        filt = determinism_filter if cfg.get("determinism_filter") else DeterminismFilter()
+        cache = _Cache(determinism=filt)
     router = AgentPathRouter(
         tools=tools,
         cache=cache,
@@ -343,12 +349,61 @@ def _run_arm(
         **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in agg.as_dict().items()},
         "speculation_fires": spec_stats.fires if spec_stats else 0,
         "speculation_precision": round(spec_stats.precision, 4) if spec_stats else 0,
+        "cache_denied": router.cache.stats.denied,
+        "denylist_size": len(determinism_filter.denylist) if determinism_filter else 0,
         "cache_size": len(router.cache),
         "cost": cost_model.per_1000_runs(per_run),
     }
     if router.prefetcher:
         router.prefetcher.close()
     return summary
+
+
+def _observations_from_rows(rows: list[dict]):
+    """Yield (tool, history, args, output) from raw chat-completions messages.
+
+    Pairs each assistant tool_call with its matching ``role==tool`` response
+    (by id), in invocation order — the same pairing
+    ``scripts/audit_cache_determinism.py`` uses. Lets the DeterminismFilter
+    learn which tools are non-idempotent. Skips rows without recoverable
+    messages (e.g. TRAIL / synthetic).
+    """
+    from agentpathrouter.data_sources import _walk_for_messages
+
+    for r in rows:
+        msgs = _walk_for_messages(r.get("raw") if isinstance(r.get("raw"), dict) else r)
+        if not msgs:
+            continue
+        call_seq = []   # (id, name, args)
+        outputs = {}    # id -> output
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "assistant":
+                for tc in m.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    if tc.get("requestor") not in (None, "assistant"):
+                        continue
+                    name = tc.get("name") or (tc.get("function") or {}).get("name")
+                    a = tc.get("arguments")
+                    if isinstance(a, str):
+                        try:
+                            a = json.loads(a)
+                        except (json.JSONDecodeError, ValueError):
+                            a = {"_raw": a}
+                    tid = tc.get("id") or ""
+                    if name and tid:
+                        call_seq.append((tid, name, a or {}))
+            elif m.get("role") == "tool":
+                tid = m.get("id") or m.get("tool_call_id") or ""
+                if tid:
+                    outputs[tid] = m.get("content")
+        history: list[str] = []
+        for tid, name, a in call_seq:
+            if tid in outputs:
+                yield (name, tuple(history), a, outputs[tid])
+            history.append(name)
 
 
 def phase4_router_eval(
@@ -359,22 +414,35 @@ def phase4_router_eval(
     small_model_threshold: float = 0.85,
     tools: dict | None = None,
     tool_cost: float = 0.0,
+    determinism_filter=None,
 ) -> dict:
     """Train n-gram once, run the §9 Phase-4 ablation across all arms.
 
     Returns a dict keyed by arm name, plus a ``cost_reduction_vs_baseline``
     block summarising the headline PRD §5.3 numbers.
+
+    If ``determinism_filter`` is supplied, an extra arm
+    ``cache+spec+routing+detfilter`` runs the full router with
+    non-idempotent tools denylisted from the cache (P3.1 safety fix).
     """
     est = NgramEntropyEstimator(n=3).fit(train_seqs)
     if tools is None:
         tools = _make_universal_registry(train_seqs, test_traces)
     cost_model = CostModel(tool_execution_usd=tool_cost)
 
+    arms = dict(ARMS)
+    if determinism_filter is not None and determinism_filter.denylist:
+        arms["cache+spec+routing+detfilter"] = {
+            "use_speculation": True, "use_small_model_routing": True,
+            "determinism_filter": True,
+        }
+
     results: dict[str, dict] = {}
-    for arm_name, cfg in ARMS.items():
+    for arm_name, cfg in arms.items():
         results[arm_name] = _run_arm(
             arm_name, cfg, est, test_traces, tools,
             threshold, small_model_threshold, cost_model,
+            determinism_filter=determinism_filter,
         )
 
     # Cost reduction vs the baseline arm.
@@ -445,6 +513,10 @@ def main() -> None:
     ap.add_argument("--tool-cost", type=float, default=0.0,
                     help="USD per tool execution. Speculation misses incur this as "
                          "a wasted-tool debit. Default 0 (tau-bench tools are free).")
+    ap.add_argument("--no-determinism-filter", action="store_true",
+                    help="Disable the per-tool determinism filter (P3.1). By default "
+                         "the driver learns a denylist of non-idempotent tools from "
+                         "observed outputs and adds a +detfilter ablation arm.")
     ap.add_argument(
         "--outdir",
         type=Path,
@@ -528,21 +600,35 @@ def main() -> None:
     if not test:
         test = list(zip(sequences, args_list, per_step_args_list))
 
+    # ---- learn per-tool determinism filter (P3.1 safety gate) ----
+    det_filter = None
+    if not args.no_determinism_filter:
+        from agentpathrouter.path_cache import DeterminismFilter
+        det_filter = DeterminismFilter.from_observations(_observations_from_rows(rows))
+        if det_filter.denylist:
+            print(f"[determinism] denylisted {len(det_filter.denylist)} non-idempotent "
+                  f"tool(s): {sorted(det_filter.denylist)[:8]}"
+                  + (" ..." if len(det_filter.denylist) > 8 else ""))
+
     # ---- phase 4 (full §9 ablation) ----
     p4 = phase4_router_eval(
         train, test, args.outdir,
         threshold=args.threshold,
         small_model_threshold=args.small_model_threshold,
         tool_cost=args.tool_cost,
+        determinism_filter=det_filter,
     )
     print("[phase4 ablation]")
-    print(f"  {'arm':<22} {'cache':>6} {'spec':>6} {'route':>6} {'qreg':>6} "
+    print(f"  {'arm':<32} {'cache':>6} {'spec':>6} {'route':>6} {'qreg':>6} "
           f"{'USD/1k':>10} {'saved':>7}")
-    for name in ("baseline", "cache_only", "cache+spec", "cache+spec+routing"):
+    arm_order = ["baseline", "cache_only", "cache+spec", "cache+spec+routing"]
+    if "cache+spec+routing+detfilter" in p4:
+        arm_order.append("cache+spec+routing+detfilter")
+    for name in arm_order:
         a = p4[name]
         c = a["cost"]
         print(
-            f"  {name:<22} "
+            f"  {name:<32} "
             f"{a['cache_hit_rate']*100:>5.1f}% "
             f"{a['speculation_hit_rate']*100:>5.1f}% "
             f"{a['small_model_route_rate']*100:>5.1f}% "

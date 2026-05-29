@@ -513,6 +513,42 @@ an earlier claim: corpus entropy → within-task entropy → moderate
 per-cluster correlation → and now "entropy alone is insufficient at the
 high end; structure matters."
 
+## P3.1 (closed) — Per-tool determinism filter implemented
+
+P3.1 *found* that telecom had a 56% stale-hit rate; the taxonomy *said*
+per-tool determinism is a mandatory gate; but nothing enforced it. Now
+implemented:
+
+- `DeterminismFilter` (in `path_cache.py`) holds a denylist of
+  non-idempotent tools. `PathCache.get`/`put` skip denylisted tools
+  entirely (counted as `denied`, forced miss → real tool runs).
+- `DeterminismFilter.from_observations((tool, history, args, output), …)`
+  learns the denylist using the same signal as
+  `audit_cache_determinism.py`: a tool is denylisted if >5% of its
+  *repeated* states produced more than one distinct output (and ≥2 such
+  states).
+- The driver learns the filter from each corpus's tool outputs and adds
+  a `cache+spec+routing+detfilter` ablation arm. `--no-determinism-filter`
+  disables it.
+
+### Effect: converts unsafe savings into sound savings
+
+| Domain   | Denylisted | Unfiltered cache hit | Unfiltered "saved" | Stale-hit risk | **Filtered cache hit** | **Filtered saved (sound)** |
+|----------|-----------:|---------------------:|-------------------:|---------------:|-----------------------:|---------------------------:|
+| retail   |        0   |        63.1%         |      64.0%         |     0.03%      |   63.1% (unchanged)    |          **64.0%**         |
+| telecom  |       29   |        44.9%         |      46.6%         |    ~56%        |        3.8%            |          **14.8%**         |
+
+Retail's denylist is empty (it was already clean), so its headline is
+untouched. Telecom's 47% was largely illusory — roughly half its cache
+hits returned stale device state from tools like `check_network_status`,
+`toggle_airplane_mode`, `check_sim_status`. With those 29 tools
+denylisted the **sound** savings are ~15%, almost entirely from routing.
+
+This closes the loop: the system is now safe to recommend per-domain.
+The honest cross-corpus story is "64% on retail-like deterministic-tool
+workloads; far less where tools observe mutable state — and the filter
+tells you which case you're in automatically."
+
 ## Hidden lesson
 
 This is also the cleanest example I have of *why measurement choices
